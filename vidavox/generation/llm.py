@@ -39,12 +39,16 @@ class Client:
         self.default_model = model_name.strip()
         
         # If API key is not provided, try to get it from environment variables
-        if api_key is None:
-            api_key = self._get_api_key_from_env()
-        
-        self.api_key = api_key
-        if not self.api_key:
-            raise ValueError(f"No API key provided for {self.provider} and none found in environment variables")
+        # Skip API key validation for Ollama
+        if self.provider == "ollama":
+            self.api_key = None
+        else:
+            if api_key is None:
+                api_key = self._get_api_key_from_env()
+            self.api_key = api_key
+            if not self.api_key:
+                raise ValueError(f"No API key provided for {self.provider} and none found in environment variables")
+    
         
         # Initialize Chat with the provider, API key, and default model
         self.chat = Chat(self.provider, self.api_key, self.default_model)
@@ -111,7 +115,8 @@ class Completions:
             prompt = "\n".join([msg["content"] for msg in messages if msg["role"] == "user"])
             payload = {
                 "model": model_to_use,
-                "prompt": prompt
+                "prompt": prompt,
+                "stream": False
             }
             headers = {"Content-Type": "application/json"}
         else:
@@ -128,9 +133,35 @@ class Completions:
     
         # Make the POST request
         response = requests.post(url, headers=headers, json=payload)
+
+      
         try:
             response.raise_for_status()
             response_data = response.json()
+
+            # If it's Ollama and we have a top-level "response" string, convert it
+            if self.provider == "ollama" and "response" in response_data:
+                # Wrap the "response" text in an OpenAI-style "choices" array
+                ollama_text = response_data["response"]
+                
+                # Optionally handle finish reason, if present
+                finish_reason = response_data["done_reason"] if "done_reason" in response_data else None
+                
+                response_data["choices"] = [{
+                    "index": 0,
+                    "finish_reason": finish_reason,
+                    "message": {
+                        # Emulate an assistant role
+                        "role": "assistant",
+                        # Put the actual LLM text here
+                        "content": ollama_text
+                    }
+                }]
+                
+                # (Optional) remove the original "response" to avoid confusion
+                del response_data["response"]
+
+                return Response(response_data)
         except requests.exceptions.HTTPError as e:
             print(f"ERROR: HTTP error occurred: {e}")
             if response.text:
@@ -142,7 +173,7 @@ class Completions:
             raise
 
         # Convert the raw response into a Response object with proper attribute access
-        return Response(response_data)
+        # return Response(response_data)
 
 
 class Response:

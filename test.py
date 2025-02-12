@@ -30,7 +30,7 @@ messages = [
     {"role": "user", "content": rag_prompt.format(context=result, question=query)},
 ]
 # client = Client(model="openai:gpt-3.5-turbo")
-client = Client(model="ollama run llama3.2:1b")
+client = Client(model="ollama:llama3.2:1b")
 
 response = client.chat.completions.create(messages=messages, temperature=0.75)
 print(response.choices[0].message.content)
