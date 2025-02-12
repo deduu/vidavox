@@ -9,7 +9,8 @@ load_dotenv()
 PROVIDER_ENDPOINTS = {
     "openai":   "https://api.openai.com/v1/chat/completions",
     "deepseek": "https://api.deepseek.ai/v1/chat/completions",
-    "sonnet":   "https://api.sonnet.ai/v1/chat/completions"
+    "sonnet":   "https://api.sonnet.ai/v1/chat/completions",
+    "ollama":   "http://localhost:11434/api/generate",
 }
 
 # Mapping of provider names to their environment variable names
@@ -54,6 +55,8 @@ class Client:
         First checks for a provider-specific environment variable,
         then falls back to a generic API_KEY environment variable.
         """
+        if self.provider == "ollama":
+            return None  # Ollama does not require an API ke
         # Try provider-specific environment variable
         env_var_name = API_KEY_ENV_VARS.get(self.provider)
         if env_var_name:
@@ -103,15 +106,24 @@ class Completions:
             raise ValueError(f"Unknown provider: {self.provider}")
 
         # Build the payload and headers
-        payload = {
-            "model": model_to_use,
-            "messages": messages,
-            "temperature": temperature
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
+        # Handle Ollama's API payload structure
+        if self.provider == "ollama":
+            prompt = "\n".join([msg["content"] for msg in messages if msg["role"] == "user"])
+            payload = {
+                "model": model_to_use,
+                "prompt": prompt
+            }
+            headers = {"Content-Type": "application/json"}
+        else:
+            payload = {
+                "model": model_to_use,
+                "messages": messages,
+                "temperature": temperature
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
         
     
         # Make the POST request

@@ -1,7 +1,7 @@
 from vidavox.core import RAG_Engine, extract_keywords
 from vidavox.generation.llm import Client
 
-file_paths = ["./Draft_POD.md"]
+file_paths = ["./unrelated/Draft_POD.md"]
 import os
 for file_path in file_paths:
     print(f"Checking {file_path}: {os.path.isfile(file_path)}")
@@ -29,7 +29,8 @@ messages = [
     {"role": "system", "content": "You are a helpful assistant"},
     {"role": "user", "content": rag_prompt.format(context=result, question=query)},
 ]
-client = Client(model="openai:gpt-3.5-turbo")
+# client = Client(model="openai:gpt-3.5-turbo")
+client = Client(model="ollama run llama3.2:1b")
 
 response = client.chat.completions.create(messages=messages, temperature=0.75)
 print(response.choices[0].message.content)
