@@ -161,7 +161,7 @@ class Completions:
                 # (Optional) remove the original "response" to avoid confusion
                 del response_data["response"]
 
-                return Response(response_data)
+            return Response(response_data)
         except requests.exceptions.HTTPError as e:
             print(f"ERROR: HTTP error occurred: {e}")
             if response.text:

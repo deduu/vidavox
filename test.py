@@ -1,16 +1,13 @@
-from vidavox.core import RAG_Engine, extract_keywords
+from vidavox.core import RAG_Engine
 from vidavox.generation.llm import Client
 
 file_paths = ["./unrelated/Draft_POD.md"]
-import os
-for file_path in file_paths:
-    print(f"Checking {file_path}: {os.path.isfile(file_path)}")
 
-engine = RAG_Engine(use_async=True).from_documents(file_paths)
+engine = RAG_Engine(embedding_model='Snowflake/snowflake-arctic-embed-l-v2.0').from_documents(file_paths)
 
-query = "Buku Usulan POD terdiri dari?"
+query = "Di buku POD isinya apa saja?"
 
-result = engine.query(query_text=query, keywords=extract_keywords(query))
+result = engine.query(query_text=query)
 
 rag_prompt = """
     ### Context (Retrieved Documents):
@@ -29,10 +26,19 @@ messages = [
     {"role": "system", "content": "You are a helpful assistant"},
     {"role": "user", "content": rag_prompt.format(context=result, question=query)},
 ]
-# client = Client(model="openai:gpt-3.5-turbo")
-client = Client(model="ollama:llama3.2:1b")
+openai_client = Client(model="openai:gpt-3.5-turbo")
+lamma_client = Client(model="ollama:llama3.2:1b")
 
-response = client.chat.completions.create(messages=messages, temperature=0.75)
-print(response.choices[0].message.content)
+response_from_open_ai = openai_client.chat.completions.create(messages=messages, temperature=0.75)
+response_from_llama = lamma_client.chat.completions.create(messages=messages, temperature=0.75)
+
+print('========== OPENAI ==========')
+print(response_from_open_ai.choices[0].message.content)
+print('\n')
+print('========== OLLAMA ==========')
+print(response_from_llama.choices[0].message.content)
+
+
+
 
 
