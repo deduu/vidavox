@@ -28,7 +28,7 @@ Many businesses and developers fail when attempting to build RAG systems due to 
 
 1. Install Vidavox RAG using pip:
    ```bash
-   pip install vidavox
+   pip install git+https://github.com/deduu/vidavox
    ```
 
 2. To work with open-source models, install Ollama and download the desired model.
