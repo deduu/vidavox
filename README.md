@@ -32,7 +32,7 @@ Many businesses and developers fail when attempting to build RAG systems due to 
    ```
 
 2. To work with open-source models, install Ollama and download the desired model.
-   Refer to [Ollama Installation Guide](link-to-ollama-guide) for details.
+   Refer to [Ollama Installation Guide](https://github.com/ollama/ollama) for details.
 
 ## 📖 Usage Example
 
