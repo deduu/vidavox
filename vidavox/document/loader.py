@@ -1,0 +1,61 @@
+# loaders.py
+from abc import ABC, abstractmethod
+from typing import List, Type
+from langchain.docstore.document import Document
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    Docx2txtLoader,
+    CSVLoader,
+    UnstructuredExcelLoader,
+    UnstructuredMarkdownLoader,
+    TextLoader,
+)
+
+class BaseDocumentLoader(ABC):
+    @abstractmethod
+    def load(self, file_path: str) -> List[Document]:
+        pass
+
+class PDFLoader(BaseDocumentLoader):
+    def load(self, file_path: str) -> List[Document]:
+        return PyPDFLoader(file_path, extract_images=True).load()
+
+class DocxLoader(BaseDocumentLoader):
+    def load(self, file_path: str) -> List[Document]:
+        return Docx2txtLoader(file_path).load()
+
+class ExcelLoader(BaseDocumentLoader):
+    def load(self, file_path: str) -> List[Document]:
+        return UnstructuredExcelLoader(file_path).load()
+class CSVLoader(BaseDocumentLoader):
+    def load(self, file_path: str) -> List[Document]:
+        return CSVLoader(file_path).load()
+class TextLoader(BaseDocumentLoader):
+    def load(self, file_path: str) -> List[Document]:
+        return TextLoader(file_path).load()
+
+class MarkdownLoader(BaseDocumentLoader):
+    def load(self, file_path: str) -> List[Document]:
+        return UnstructuredMarkdownLoader(file_path).load()
+
+
+class LoaderFactory:
+    _loaders = {
+        '.pdf': PDFLoader,
+        '.docx': DocxLoader,
+        '.xlsx': ExcelLoader,
+        '.csv': CSVLoader,
+        '.txt': TextLoader,
+        '.md': MarkdownLoader,
+    }
+
+    @classmethod
+    def get_loader(cls, file_extension: str) -> BaseDocumentLoader:
+        loader_class = cls._loaders.get(file_extension.lower())
+        if not loader_class:
+            raise ValueError(f"Unsupported file format: {file_extension}")
+        return loader_class()
+
+    @classmethod
+    def register_loader(cls, extension: str, loader_class: Type[BaseDocumentLoader]):
+        cls._loaders[extension.lower()] = loader_class

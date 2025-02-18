@@ -5,15 +5,16 @@ import time
 import pickle
 import os
 import logging
-from keybert import KeyBERT
+from pathlib import Path
+
 import asyncio
 from typing import List, Optional, Any, Tuple
-from .retrieval.bm25_search import BM25_search
-from .retrieval.faiss_search import FAISS_search
-from .retrieval.hybrid_search import Hybrid_search
-from .utils.token_counter import TokenCounter
-from .document.doc_processor import process_doc_file
-from .generation.llm import Client
+from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search
+
+from vidavox.utils.token_counter import TokenCounter
+# from .document.doc_processor import process_doc_file
+# from .generation.llm import Client
+from vidavox.document import DocumentSplitter, ProcessingConfig
 from typing import List, Optional, Any, Tuple, Callable
 
 
@@ -21,13 +22,25 @@ from typing import List, Optional, Any, Tuple, Callable
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-
-def extract_keywords(doc, threshold=0.4, top_n = 5):
-    kw_model = KeyBERT()
-    keywords = kw_model.extract_keywords(doc, threshold=threshold, top_n=top_n)
-    keywords = [key for key, _ in keywords]
-    return keywords
+def get_file_metadata(file_path: Path) -> dict:
+    """
+    A simple function to extract file metadata.
+    You can expand this function to extract more information
+    similar to the reference code.
+    """
+    try:
+        stat = file_path.stat()
+        metadata = {
+            "file_path": str(file_path),
+            "file_name": file_path.name,
+            "file_size": stat.st_size,
+            "creation_time": time.ctime(stat.st_ctime),
+            "modification_time": time.ctime(stat.st_mtime),
+        }
+        return metadata
+    except Exception as e:
+        logger.warning(f"Could not get metadata for {file_path}: {e}")
+        return {}
 
 class RAG_Engine:
     def __init__(self, use_async:Optional[bool] = False, embedding_model: Optional[Any] = 'all-MiniLM-L6-v2'):
@@ -43,8 +56,8 @@ class RAG_Engine:
         self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
     
     
-    def from_documents(
-        self, file_paths: List[str], chunk_size: Optional[int] = 5000, chunk_overlap: Optional[int] = 500, chunker: Optional[Callable] = None,
+    def from_paths(
+        self, file_paths: List[str], config:Optional[ProcessingConfig] = ProcessingConfig(), chunker: Optional[Callable] = None,
          show_progress: bool = False
     ):
         """Create a new RetrievalEngine instance from a list of document file paths with optional custom chunking."""
@@ -58,29 +71,79 @@ class RAG_Engine:
             logger.info(f"Processing file: {file_name}")
 
             try:
-                # Use process_uploaded_file to get split documents
-                split_docs = process_doc_file(
-                    file_path=file_path,
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                    chunker=chunker
-                )
+               
+                nodes = DocumentSplitter(config).process_file(file_path, chunker)
+                print(nodes)
 
                 # Add each chunk to the engine
-                for idx, doc in enumerate(split_docs):
+                for idx, doc in enumerate(nodes):
                     
                     timestamp = int(time.time())  # Seconds since epoch
                     doc_id = f"{file_name}_{timestamp}_chunk{idx}"
 
-                    self.add_document(doc_id=doc_id, text=doc.page_content, meta_data=doc.metadata)
+                     # Optionally merge loader-provided metadata with file metadata
+                    file_meta = get_file_metadata(Path(file_path))
+                    combined_meta = {**file_meta, **doc.metadata}
+                    
+                    self.add_document(doc_id=doc_id, text=doc.page_content, meta_data=combined_meta)
 
-                logger.info(f"Successfully added {len(split_docs)} chunks from {file_name}")
+                    # self.add_document(doc_id=doc_id, text=doc.page_content, meta_data=doc.metadata)
+
+                logger.info(f"Successfully added {len(nodes)} chunks from {file_name}")
             
             except Exception as e:
                 logger.error(f"Failed to process file {file_name}: {e}")
 
         return self
 
+    def from_directory(
+        self,
+        directory: str,
+        config: Optional[ProcessingConfig] = ProcessingConfig(),
+        chunker: Optional[Callable[[Any], List[Any]]] = None,
+        recursive: bool = True,
+        show_progress: bool = False,
+        allowed_extensions: Optional[List[str]] = None
+    ):
+        """
+        Process all files in a directory.
+        
+        Args:
+            directory (str): The directory path.
+            config (ProcessingConfig, optional): Processing configuration.
+            chunker (Callable, optional): Custom chunker function.
+            recursive (bool): Whether to search subdirectories recursively.
+            show_progress (bool): Whether to display a progress bar.
+            allowed_extensions (List[str], optional): List of file extensions to include (e.g. [".txt", ".md"]).
+        
+        Returns:
+            self: The updated RAG_Engine instance.
+        """
+        dir_path = Path(directory)
+        if not dir_path.is_dir():
+            raise ValueError(f"Directory {directory} does not exist.")
+
+        # Collect files; rglob for recursive, glob for non-recursive.
+        if recursive:
+            files = list(dir_path.rglob("*"))
+        else:
+            files = list(dir_path.glob("*"))
+
+        # Filter to include only files and exclude hidden files.
+        file_paths = []
+        for f in files:
+            if f.is_file() and not f.name.startswith("."):
+                if allowed_extensions:
+                    if f.suffix.lower() in [ext.lower() for ext in allowed_extensions]:
+                        file_paths.append(str(f))
+                else:
+                    file_paths.append(str(f))
+
+        if not file_paths:
+            raise ValueError(f"No files found in directory {directory} matching criteria.")
+
+        logger.info(f"Found {len(file_paths)} files in {directory}.")
+        return self.from_paths(file_paths, config=config, chunker=chunker, show_progress=show_progress)
 
     def add_document(self, doc_id, text, meta_data=None):
         self.token_counter.add_document(doc_id, text)
@@ -325,27 +388,4 @@ class RAG_Engine:
             self.faiss_wrapper = FAISS_search(self.embedding_model)
             self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
 
-class AgentWorkFlow:
-    def __init__(self, tools: List[callable], llm:Client, system_prompt: str):
-        self.tools = tools
-        self.llm = llm
-        self.system_prompt = system_prompt
 
-    @classmethod
-    def from_tools_or_functions(cls, tools: List[callable], llm, system_prompt: str):
-        return cls(tools, llm, system_prompt)
-
-    def run(self, user_input: str) -> str:
-        # Example of a basic workflow: call tools and combine their responses
-        tool_results = [tool(user_input) for tool in self.tools]
-        
-        # Pass tool results and user input to the LLM for a final response
-        combined_prompt = f"{self.system_prompt}\nUser input: {user_input}\nTool responses: {tool_results}"
-
-        messages = [
-        {"role": "system", "content":self.system_prompt},
-        {"role": "user", "content": user_input},
-        ]
-        response = self.llm.chat.completions.create(messages=messages, temperature=0.75)
-        
-        return response
