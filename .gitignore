@@ -12,3 +12,5 @@ __pycache__/
 
 # Ignore documentation and test files
 unrelated/
+
+test*.py

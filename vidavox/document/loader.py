@@ -27,10 +27,10 @@ class DocxLoader(BaseDocumentLoader):
 class ExcelLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:
         return UnstructuredExcelLoader(file_path).load()
-class CSVLoader(BaseDocumentLoader):
+class _CSVLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:
         return CSVLoader(file_path).load()
-class TextLoader(BaseDocumentLoader):
+class _TextLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:
         return TextLoader(file_path).load()
 
@@ -44,8 +44,8 @@ class LoaderFactory:
         '.pdf': PDFLoader,
         '.docx': DocxLoader,
         '.xlsx': ExcelLoader,
-        '.csv': CSVLoader,
-        '.txt': TextLoader,
+        '.csv': _CSVLoader,
+        '.txt': _TextLoader,
         '.md': MarkdownLoader,
     }
 

@@ -43,7 +43,7 @@ class RAG_Engine:
         self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
     
     
-    def from_documents(
+    def from_paths(
         self, file_paths: List[str], chunk_size: Optional[int] = 5000, chunk_overlap: Optional[int] = 500, chunker: Optional[Callable] = None,
          show_progress: bool = False
     ):

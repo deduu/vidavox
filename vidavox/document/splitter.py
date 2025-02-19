@@ -6,6 +6,7 @@ from .config import ProcessingConfig, SplitterConfig
 from .loader import LoaderFactory
 from .node import DocumentNodes
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
