@@ -104,7 +104,7 @@ class BM25_search:
         self.update_bm25()  # Update BM25 index only once
        
 
-    async def remove_document(self, doc_id: str) -> bool:
+    def remove_document(self, doc_id: str) -> bool:
         """
         Removes a document from the corpus based on its ID and updates the BM25 index.
 

@@ -3,6 +3,7 @@ import logging
 from sklearn.preprocessing import MinMaxScaler
 from sentence_transformers import CrossEncoder
 import torch
+from typing import Optional
 # from FlagEmbedding import FlagReranker
 
 
@@ -82,7 +83,7 @@ class Hybrid_search:
         #     return re_ranked_results
 
         return results
-    def advanced_search(self, query, keywords, top_n=5, threshold=0.53, prefixes=None):
+    def advanced_search(self, query, keywords, top_n:Optional[int] = 5, threshold:Optional[float] = 0.53, prefixes:Optional[list] = None):
         # Dynamic BM25 weighting
         self._dynamic_weighting(len(query.split()))
         keywords = f"{' '.join(keywords)}" if keywords else ""
@@ -150,6 +151,8 @@ class Hybrid_search:
         #     return re_ranked_results
 
         return results
+    
+
 
     def _dynamic_weighting(self, query_length):
         if query_length <= 5:
@@ -281,7 +284,8 @@ class Hybrid_search:
         top_indices = sorted_indices[:top_n]
 
         results = [(filtered_doc_ids[idx], hybrid_scores[idx]) for idx in top_indices]
-        self.logger.info(f"Top {top_n} results: {results}")
+        if top_n < 10:
+            self.logger.info(f"Top {top_n} results: {results}")
         return results
     
     def _rerank_results(self, query, results):

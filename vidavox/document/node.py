@@ -12,6 +12,9 @@ class ChunkInfo:
     content: str
     metadata: dict
 
+class DocumentNode(Document):
+    pass
+    
 class DocumentNodes:
     """
     A container for a list of document chunks with extra helper methods.

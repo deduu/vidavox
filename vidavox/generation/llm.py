@@ -113,6 +113,9 @@ class Completions:
         # Handle Ollama's API payload structure
         if self.provider == "ollama":
             prompt = "\n".join([msg["content"] for msg in messages if msg["role"] == "user"])
+
+            print(f"Prompt: {prompt}")
+            print(f"Model: {model_to_use}")
             payload = {
                 "model": model_to_use,
                 "prompt": prompt,

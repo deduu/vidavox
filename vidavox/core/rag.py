@@ -72,7 +72,7 @@ class RAG_Engine:
 
             try:
                
-                nodes = DocumentSplitter(config).process_file(file_path, chunker)
+                nodes = DocumentSplitter(config).run(file_path, chunker)
                 print(nodes)
 
                 # Add each chunk to the engine

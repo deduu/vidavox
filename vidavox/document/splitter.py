@@ -1,5 +1,6 @@
 import os
 import logging
+from tqdm import tqdm
 from typing import List, Optional, Callable
 from langchain.docstore.document import Document
 from .config import ProcessingConfig, SplitterConfig
@@ -11,16 +12,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DocumentSplitter:
-    def __init__(self, config: ProcessingConfig):
+    def __init__(self, config: ProcessingConfig, show_progress: bool = False):
         self.config = config
         self.splitter_configs = config.get_default_splitter_configs()
+        self.show_progress = show_progress
         if config.splitter_configs:
             self.splitter_configs.update(config.splitter_configs)
 
     def split_documents(self, documents: List[Document]) -> List[Document]:
         split_docs = []
         
-        for doc in documents:
+         # Wrap documents in tqdm if show_progress is True
+        doc_iterator = tqdm(documents, desc="Splitting documents") if self.show_progress else documents
+        
+        for doc in doc_iterator:
             ext = doc.metadata.get("source_extension", "").lower()
             splitter_config = self.splitter_configs.get(ext, self.splitter_configs["default"])
             
@@ -43,7 +48,7 @@ class DocumentSplitter:
                 
         return split_docs
     
-    def process_file(
+    def run(
         self,
         file_path: str,
         custom_chunker: Optional[Callable[[Document], List[Document]]] = None
@@ -72,7 +77,9 @@ class DocumentSplitter:
             if custom_chunker:
                 logger.info(f"Using custom chunker for {file_path}")
                 split_docs = []
-                for doc in documents:
+                # Add progress bar for custom chunking if show_progress is True
+                doc_iterator = tqdm(documents, desc="Custom chunking") if self.show_progress else documents
+                for doc in doc_iterator:
                     chunks = custom_chunker(doc)
                     split_docs.extend(chunks)
             else:
