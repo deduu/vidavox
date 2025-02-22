@@ -29,7 +29,7 @@ class ExcelLoader(BaseDocumentLoader):
         return UnstructuredExcelLoader(file_path).load()
 class _CSVLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:
-        return CSVLoader(file_path).load()
+        return CSVLoader(file_path, encoding='utf-8').load()
 class _TextLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:
         return TextLoader(file_path).load()

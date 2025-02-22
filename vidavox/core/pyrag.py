@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable, Union
 from dataclasses import dataclass, asdict
 import numpy as np
 from tqdm import tqdm
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -214,68 +215,194 @@ class RAG_Engine:
         # Results cache
         self.results = []
     
-    def from_paths(self, file_paths: List[str], 
-                  config: Optional[ProcessingConfig] = None,
-                  chunker: Optional[Callable] = None,
-                  show_progress: bool = False) -> 'RAG_Engine':
-        """Build engine from a list of file paths."""
-        config = config or ProcessingConfig()
+    def _process_csv_as_dataframe(
+        self, 
+        file_path: str, 
+        text_col: str,
+        metadata_cols: List[str]
+    ) -> List[Tuple[str, str, Dict]]:
+        """Process a CSV file as a DataFrame."""
+        try:
+            df = pd.read_csv(file_path)
+            batch_docs = []
+            file_name = os.path.basename(file_path)
+            
+            # Verify text column exists
+            if text_col not in df.columns:
+                logger.error(f"Text column '{text_col}' not found in CSV file {file_name}. Skipping file.")
+                return []
+            
+            # Process each row
+            for idx, row in df.iterrows():
+                doc_id = f"{file_name}_{idx}"
+                doc_text = str(row[text_col])
+                
+                # Create metadata dictionary
+                doc_metadata = {
+                    'source': file_path,
+                    'file_name': file_name,
+                    'row_index': idx,
+                    'file_type': 'csv'
+                }
+                
+                # Add specified metadata columns
+                for col in metadata_cols:
+                    if col in df.columns:
+                        doc_metadata[col] = row[col]
+                    
+                batch_docs.append((doc_id, doc_text, doc_metadata))
+                
+            logger.info(f"Successfully processed {len(df)} rows from CSV file {file_name}")
+            return batch_docs
+            
+        except Exception as e:
+            logger.error(f"Failed to process CSV file {file_path}: {e}")
+            return []
+
+    def _process_file(self, file_path: str, config: ProcessingConfig, chunker: Optional[Callable] = None) -> List[Tuple[str, str, Dict]]:
+        """Process a single file into the required document format."""
         processor = FileProcessor()
+        file_name = os.path.basename(file_path)
+        batch_docs = []
+
+        try:
+            # Split the document into nodes
+            nodes = DocumentSplitter(config).run(file_path, chunker)
+            
+            # Process each chunk
+            for idx, doc in enumerate(nodes):
+                timestamp = int(time.time())
+                doc_id = f"{file_name}_{timestamp}_chunk_{idx}"
+                
+                # Get and merge metadata
+                file_meta = processor.get_file_metadata(Path(file_path))
+                file_meta['file_type'] = Path(file_path).suffix.lower()[1:]  # Add file type
+                combined_meta = {**file_meta, **doc.metadata}
+                
+                batch_docs.append((doc_id, doc.page_content, combined_meta))
+                
+            logger.info(f"Successfully processed {len(nodes)} chunks from {file_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to process file {file_name}: {e}")
+            
+        return batch_docs
+    
+    def from_paths(
+        self,
+        sources: List[str],
+        config: Optional[ProcessingConfig] = None,
+        chunker: Optional[Callable] = None,
+        show_progress: bool = False,
+        load_csv_as_pandas_dataframe: bool = False,
+        text_col: Optional[str] = None,
+        metadata_cols: Optional[List[str]] = None
+    ) -> 'RAG_Engine':
+        """
+        Build engine from a list of file paths, with mixed format support.
+        
+        Args:
+            sources (List[str]): List of file paths (can be mixed formats)
+            config (ProcessingConfig, optional): Processing configuration for non-CSV files
+            chunker (Callable, optional): Optional custom chunking function
+            show_progress (bool): Whether to show progress bar
+            load_as_pandas_dataframe (bool): If True, processes .csv files using pandas
+            text_col (str, optional): Column name containing main text (required for CSV processing)
+            metadata_cols (List[str], optional): List of columns to include as metadata for CSV files
+        """
+        if load_csv_as_pandas_dataframe and not text_col:
+            raise ValueError("text_col must be specified when load_as_pandas_dataframe is True")
+            
+        config = config or ProcessingConfig()
+        metadata_cols = metadata_cols or []
+        batch_docs = []
+        BATCH_SIZE = 100
 
         # Configure progress tracking
-        iterator = tqdm(file_paths, desc="Processing documents", unit="file") if show_progress else file_paths
+        iterator = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
         
-        batch_docs = []  # Collect documents for batch processing
-        BATCH_SIZE = 100  # Adjust based on memory constraints
+        # Collect processing statistics
+        stats = {
+            'csv_files_processed': 0,
+            'other_files_processed': 0,
+            'failed_files': 0
+        }
         
+        # Process files
         for file_path in iterator:
-            file_name = os.path.basename(file_path)
-            logger.info(f"Processing file: {file_name}")
-
             try:
-                # Split the document into nodes
-                nodes = DocumentSplitter(config).run(file_path, chunker)
+                is_csv = file_path.lower().endswith('.csv')
                 
-                # Process each chunk
-                for idx, doc in enumerate(nodes):
-                    timestamp = int(time.time())
-                    doc_id = f"{file_name}_{timestamp}_chunk_{idx}"
-                    
-                    # Merge metadata
-                    file_meta = processor.get_file_metadata(Path(file_path))
-
-                    logger.info(f"Metadata: {file_meta}")
-                    combined_meta = {**file_meta, **doc.metadata}
-                    logger.info(f"Combined metadata: {combined_meta}")
-
+                if is_csv and load_csv_as_pandas_dataframe:
+                    file_docs = self._process_csv_as_dataframe(
+                        file_path, 
+                        text_col=text_col,
+                        metadata_cols=metadata_cols
+                    )
+                    # print(f"file_docs: {file_docs}")
+                    if file_docs:
+                        stats['csv_files_processed'] += 1
+                else:
+                    file_docs = self._process_file(file_path, config, chunker)
+                    if file_docs:
+                        stats['other_files_processed'] += 1
                 
+                if not file_docs:
+                    stats['failed_files'] += 1
+                    continue
                     
-                    # Add to batch
-                    batch_docs.append((doc_id, doc.page_content, combined_meta))
-                    
-                    # Process batch if it reaches the threshold
-                    if len(batch_docs) >= BATCH_SIZE:
-                        self._process_document_batch(batch_docs)
-                        batch_docs = []
+                batch_docs.extend(file_docs)
                 
-                logger.info(f"Successfully added {len(nodes)} chunks from {file_name}")
-            
+                # Process batch if it reaches threshold
+                if len(batch_docs) >= BATCH_SIZE:
+                    self._process_document_batch(batch_docs)
+                    batch_docs = []
+                    
             except Exception as e:
-                logger.error(f"Failed to process file {file_name}: {e}")
-        
+                stats['failed_files'] += 1
+                logger.error(f"Failed to process file {file_path}: {e}")
+                continue
+
         # Process any remaining documents
         if batch_docs:
             self._process_document_batch(batch_docs)
             
+        # Log processing summary
+        logger.info(
+            f"Processing complete:\n"
+            f"- CSV files processed: {stats['csv_files_processed']}\n"
+            f"- Other files processed: {stats['other_files_processed']}\n"
+            f"- Failed files: {stats['failed_files']}"
+        )
+            
         return self
     
-    def from_directory(self, directory: str,
-                      config: Optional[ProcessingConfig] = None,
-                      chunker: Optional[Callable] = None,
-                      recursive: bool = True,
-                      show_progress: bool = False,
-                      allowed_extensions: Optional[List[str]] = None) -> 'RAG_Engine':
-        """Build engine from all files in a directory."""
+    def from_directory(
+        self,
+        directory: str,
+        config: Optional[ProcessingConfig] = None,
+        chunker: Optional[Callable] = None,
+        recursive: bool = True,
+        show_progress: bool = False,
+        allowed_extensions: Optional[List[str]] = None,
+        load_as_pandas_dataframe: bool = False,
+        text_col: Optional[str] = None,
+        metadata_cols: Optional[List[str]] = None
+    ) -> 'RAG_Engine':
+        """
+        Build engine from all files in a directory.
+        
+        Args:
+            directory (str): Directory path to process
+            config (ProcessingConfig, optional): Processing configuration for non-CSV files
+            chunker (Callable, optional): Optional custom chunking function
+            recursive (bool): Whether to search subdirectories
+            show_progress (bool): Whether to show progress bar
+            allowed_extensions (List[str], optional): List of allowed file extensions
+            load_as_pandas_dataframe (bool): If True, processes .csv files using pandas
+            text_col (str, optional): Column name containing main text (required for CSV processing)
+            metadata_cols (List[str], optional): List of columns to include as metadata for CSV files
+        """
         processor = FileProcessor()
         file_paths = processor.collect_files(directory, recursive, allowed_extensions)
         
@@ -284,17 +411,23 @@ class RAG_Engine:
             
         logger.info(f"Found {len(file_paths)} files in {directory}.")
         return self.from_paths(
-            file_paths, 
-            config=config or ProcessingConfig(), 
+            file_paths,
+            config=config or ProcessingConfig(),
             chunker=chunker,
-            show_progress=show_progress
+            show_progress=show_progress,
+            load_as_pandas_dataframe=load_as_pandas_dataframe,
+            text_col=text_col,
+            metadata_cols=metadata_cols
         )
+  
+
     
     def _process_document_batch(self, docs: List[Tuple[str, str, Dict]]) -> None:
         """Process a batch of documents efficiently."""
         try:
             # Extract components for batch processing
             doc_ids, texts, meta_datas = zip(*docs)
+            # print(f"doc_ids: {doc_ids}, texts: {texts}, meta_datas: {meta_datas}")
             
             # Update document manager
             self.doc_manager.add_documents(docs)

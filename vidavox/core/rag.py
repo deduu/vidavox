@@ -288,6 +288,43 @@ class RAG_Engine:
             return retrieved_docs
         else:
             return [{"id":doc_id, "url": "None.", "text": None}]
+    
+
+    def retrieve_best_chunk_per_document(self, query_text, keywords: Optional[List[str]] = None, 
+                                       threshold: Optional[float] = 0.4, top_k: Optional[int] = 5, prefixes=None):
+        # Get the raw search results with scores
+        # (Assuming advanced_search returns a list of (doc_id, score) tuples)
+        results = self.hybrid_search.advanced_search(query_text, keywords=keywords, top_n=top_k, 
+                                                    threshold=threshold, prefixes=prefixes)
+        if not results:
+            return [{"id": "None.", "url": "None.", "text": None, "score": None}]
+        
+        best_chunks = {}
+        for doc_id, score in results:
+            try:
+                index = self.doc_ids.index(doc_id)
+            except ValueError:
+                continue
+
+            # Retrieve metadata; ensure that file_name is part of your metadata.
+            meta = self.meta_data[index]
+            file_name = meta.get("file_name", None)
+            if not file_name:
+                continue
+
+            # If this document is not yet in the dictionary or this chunk's score is higher than the stored one, update it.
+            if file_name not in best_chunks or score > best_chunks[file_name]["score"]:
+                best_chunks[file_name] = {
+                    "id": doc_id,
+                    "url": meta.get("source", "unknown_url"),
+                    "text": self.documents[index],
+                    "score": score,
+                    "meta_data": meta,
+                }
+
+        # Return the best chunk from each document as a list.
+        return list(best_chunks.values())
+
         
     async def search_async(self, query_text, keywords:Optional[List[str]] = None, threshold: Optional[float] = 0.4, top_k: Optional[int] = 5,prefixes=None):
         try:

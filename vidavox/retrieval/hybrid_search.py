@@ -94,14 +94,14 @@ class Hybrid_search:
         bm25_scores, bm25_doc_ids = self._get_bm25_results(keywords, top_n = top_n)
         # self.logger.info(f"BM25 Scores: {bm25_scores}, BM25 doc_ids: {bm25_doc_ids}")
         # Get FAISS distances, indices, and doc_ids
-        faiss_distances, faiss_indices, faiss_doc_ids = self._get_faiss_results(query)
-        try:
-            faiss_distances, indices, faiss_doc_ids = self._get_faiss_results(query, top_n = top_n)
+        faiss_distances, faiss_indices, faiss_doc_ids = self._get_faiss_results(query, top_n=top_n)
+        # try:
+        #     faiss_distances, indices, faiss_doc_ids = self._get_faiss_results(query, top_n = top_n)
             
-            # for dist, idx, doc_id in zip(faiss_distances, indices, faiss_doc_ids):
-            #     print(f"Distance: {dist:.4f}, Index: {idx}, Doc ID: {doc_id}")
-        except Exception as e:
-            self.logger.error(f"Search failed: {str(e)}")
+        #     for dist, idx, doc_id in zip(faiss_distances, indices, faiss_doc_ids):
+        #         print(f"Distance: {dist:.4f}, Index: {idx}, Doc ID: {doc_id}")
+        # except Exception as e:
+        #     self.logger.error(f"Search failed: {str(e)}")
         # Map doc_ids to scores
         bm25_scores_dict, faiss_scores_dict = self._map_scores_to_doc_ids(
             bm25_doc_ids, bm25_scores, faiss_doc_ids, faiss_distances
