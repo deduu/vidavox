@@ -6,13 +6,20 @@ import torch
 from typing import Optional
 # from FlagEmbedding import FlagReranker
 
+from enum import Enum
+
+class SearchMode(Enum):
+    HYBRID = "hybrid"
+    BM25 = "bm25"
+    FAISS = "faiss"
 
 class Hybrid_search:
-    def __init__(self, bm25_search, faiss_search, reranker_model_name="BAAI/bge-reranker-v2-gemma", initial_bm25_weight=0.5):
+    def __init__(self, bm25_search, faiss_search, reranker_model_name="BAAI/bge-reranker-v2-gemma", initial_bm25_weight=0.5, search_mode: SearchMode = SearchMode.HYBRID):
         self.bm25_search = bm25_search
         self.faiss_search = faiss_search
         self.bm25_weight = initial_bm25_weight
         # self.reranker = FlagReranker(reranker_model_name, use_fp16=True)
+        self.search_mode = search_mode
         self.logger = logging.getLogger(__name__)
 
     async def advanced_search_async(self, query, keywords, top_n=5, threshold=0.53, prefixes=None):
@@ -83,7 +90,10 @@ class Hybrid_search:
         #     return re_ranked_results
 
         return results
-    def advanced_search(self, query, keywords, top_n:Optional[int] = 5, threshold:Optional[float] = 0.53, prefixes:Optional[list] = None):
+    def advanced_search(self, query, keywords, top_n:Optional[int] = 5, threshold:Optional[float] = 0.53, prefixes:Optional[list] = None, search_mode: Optional[SearchMode] = SearchMode.HYBRID):
+        if search_mode:
+            self.search_mode = search_mode
+            
         # Dynamic BM25 weighting
         self._dynamic_weighting(len(query.split()))
         keywords = f"{' '.join(keywords)}" if keywords else ""
@@ -269,6 +279,12 @@ class Hybrid_search:
         return normalized_scores
 
     def _calculate_hybrid_scores(self, bm25_scores_normalized, faiss_scores_normalized):
+        if self.search_mode == SearchMode.BM25:
+            return bm25_scores_normalized
+        elif self.search_mode == SearchMode.FAISS:
+            return faiss_scores_normalized
+        else:  # hybrid mode
+            return self.bm25_weight * bm25_scores_normalized + (1 - self.bm25_weight) * faiss_scores_normalized
         hybrid_scores = self.bm25_weight * bm25_scores_normalized + (1 - self.bm25_weight) * faiss_scores_normalized
         # self.logger.info(f"Hybrid scores: {hybrid_scores}")
         return hybrid_scores

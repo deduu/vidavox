@@ -38,3 +38,7 @@ llama-index = "^0.12.19"
 smolagents = "^1.9.2"
 
 
+[tool.poetry.group.dev.dependencies]
+asyncpg = "^0.30.0"
+psycopg2-binary = "^2.9.10"
+

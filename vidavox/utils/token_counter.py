@@ -27,3 +27,21 @@ class TokenCounter:
 
     def get_total_tokens(self):
         return self.total_tokens
+
+from typing import Protocol
+
+# class TokenCounter(Protocol):
+#     def count_tokens(self, text: str) -> int:
+#         ...
+
+class SimpleTokenCounter:
+    def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
+class TikTokenCounter:
+    def __init__(self, model_name: str = "gpt-4"):
+        import tiktoken
+        self.encoding = tiktoken.encoding_for_model(model_name)
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.encoding.encode(text))

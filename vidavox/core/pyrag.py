@@ -2,7 +2,7 @@
 import logging
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable, Union
+from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional
 from dataclasses import dataclass, asdict
 import numpy as np
 from tqdm import tqdm
@@ -191,7 +191,7 @@ class StateManager:
 import asyncio
 from typing import List, Optional, Any, Dict, Tuple, Callable, Union
 
-from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search
+from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search, SearchMode
 from vidavox.utils.token_counter import TokenCounter
 from vidavox.document import DocumentSplitter, ProcessingConfig
 
@@ -294,7 +294,7 @@ class RAG_Engine:
         config: Optional[ProcessingConfig] = None,
         chunker: Optional[Callable] = None,
         show_progress: bool = False,
-        load_csv_as_pandas_dataframe: bool = False,
+        load_csv_as_pandas_dataframe: Optional[bool] = False,
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None
     ) -> 'RAG_Engine':
@@ -385,7 +385,7 @@ class RAG_Engine:
         recursive: bool = True,
         show_progress: bool = False,
         allowed_extensions: Optional[List[str]] = None,
-        load_as_pandas_dataframe: bool = False,
+        load_csv_as_pandas_dataframe: Optional[bool] = False,
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None
     ) -> 'RAG_Engine':
@@ -415,7 +415,7 @@ class RAG_Engine:
             config=config or ProcessingConfig(),
             chunker=chunker,
             show_progress=show_progress,
-            load_as_pandas_dataframe=load_as_pandas_dataframe,
+            load_csv_as_pandas_dataframe=load_csv_as_pandas_dataframe,
             text_col=text_col,
             metadata_cols=metadata_cols
         )
@@ -585,7 +585,7 @@ class RAG_Engine:
 
     #     return list(best_chunks.values())
 
-    def retrieve_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, sort_globally: Optional[bool]= False):
+    def retrieve_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False):
         """
         Perform an advanced search and return the top 'per_doc_top_n' chunks per document.
         Assumes that the doc_id is structured as: fileName_timestamp_chunk{idx}.
@@ -602,7 +602,8 @@ class RAG_Engine:
         """
         # Retrieve a large candidate pool by setting top_n high.
         # (You may adjust this number based on your collection size.)
-        candidate_results = self.hybrid_search.advanced_search(query, keywords, top_n=1000, threshold=0.01, prefixes=prefixes)
+        candidate_results = self.hybrid_search.advanced_search(query_text, keywords, top_n=1000, threshold=threshold, search_mode = search_mode, prefixes=prefixes)
+        # print(f"candidate_results: {candidate_results}")
         
         if not candidate_results:
             self.logger.info("No candidate results found.")
@@ -614,6 +615,8 @@ class RAG_Engine:
         for doc_id, score in candidate_results:
             doc_key = doc_id.split('_')[0]  # Extract fileName
             grouped_results.setdefault(doc_key, []).append((doc_id, score))
+        
+        # print(f"grouped_results: {grouped_results}")
         
         # For each document group, sort the chunks by score (highest first) and take top per_doc_top_n
         final_results = []
