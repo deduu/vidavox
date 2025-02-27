@@ -280,6 +280,7 @@ class DatasetGenerator:
                      token: str = None,
                      private: bool = False, 
                      split_name: str = "train",
+                     revision:str = None,
                      dataset_dict: Dict[str, List[KeywordPair]] = None) -> str:
         """
         Upload the generated dataset to Hugging Face Hub.
@@ -310,4 +311,4 @@ class DatasetGenerator:
             dataset = uploader.prepare_dataset(self._pairs, split_name)
         
         # Push to hub
-        return uploader.upload_dataset(dataset, repo_name, private)
+        return uploader.upload_dataset(dataset, repo_name, private, revision = revision)

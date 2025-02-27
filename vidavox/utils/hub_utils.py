@@ -53,7 +53,7 @@ class HuggingFaceUploader:
         return DatasetDict(datasets_dict)
     
     @staticmethod
-    def upload_dataset(dataset: DatasetDict, repo_name: str, private: bool = False) -> str:
+    def upload_dataset(dataset: DatasetDict, repo_name: str, private: bool = False, revision:str = None) -> str:
         """
         Upload a dataset to Hugging Face Hub.
         
@@ -67,7 +67,8 @@ class HuggingFaceUploader:
         """
         repo_url = dataset.push_to_hub(
             repo_id=repo_name,
-            private=private
+            private=private,
+            revision=revision
         )
         
         return repo_url
