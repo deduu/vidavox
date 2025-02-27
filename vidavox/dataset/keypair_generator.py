@@ -259,20 +259,21 @@ class DatasetGenerator:
         return pd.DataFrame(data)
     
     def to_huggingface_dataset(self) -> Dataset:
-        """
-        Convert the generated keyword pairs to a Hugging Face Dataset.
-        
-        Returns:
-            Hugging Face Dataset object
-        """
         if not self._pairs:
             raise ValueError("No pairs have been generated yet. Call generate() first.")
-        
-        # Convert pairs to dictionaries
-        data = [asdict(pair) for pair in self._pairs]
-        
-        # Create a Dataset object
+
+        # Build a list of dicts with extra fields
+        data = []
+        for pair in self._pairs:
+            data.append({
+                "sentence": pair.sentence,
+                "keywords": pair.keywords,
+                "keyword_count": len(pair.keywords),
+                "keywords_joined": ", ".join(pair.keywords)
+            })
+
         return Dataset.from_list(data)
+
     
     def upload_to_hub(self, 
                      repo_name: str, 
