@@ -9,6 +9,7 @@ from .models import KeywordPair
 from .response_parser import ResponseParser
 from .prompt_template import PromptTemplates
 from vidavox.utils.hub_utils import HuggingFaceUploader
+from vidavox.document.splitter import ProcessingConfig
 
 class DatasetGenerator:
     """
@@ -16,7 +17,7 @@ class DatasetGenerator:
     using RAG (Retrieval-Augmented Generation) and LLM processing.
     """
     
-    def __init__(self, rag_engine=None, llm_client=None):
+    def __init__(self, rag_engine=None, doc_splitter=None, llm_client=None):
         """
         Initialize the dataset generator with RAG engine and LLM client.
         
@@ -25,15 +26,22 @@ class DatasetGenerator:
             llm_client: LLM client for generating keywords
         """
         self.rag_engine = rag_engine
+        self.doc_splitter = doc_splitter
         self.llm_client = llm_client
         self._context = None
         self._prompt_template = PromptTemplates.get_default_keyword_extraction_template()
         self._pairs = []
+        self._document_nodes = None
         self._parser = ResponseParser()
     
     def set_rag_engine(self, rag_engine):
         """Set or update the RAG engine."""
         self.rag_engine = rag_engine
+        return self
+    
+    def set_doc_splitter(self, doc_splitter):
+        """Set or update the document splitter."""
+        self.doc_splitter = doc_splitter
         return self
     
     def set_llm_client(self, llm_client):
@@ -75,6 +83,41 @@ class DatasetGenerator:
         
         self._context = rag.retrieve(query_text=query)
         return self
+    
+    
+    def retrieve_nodes(self, file_path: str, config: Optional[ProcessingConfig] = None):
+        """
+        Process a document using the document splitter.
+        
+        Args:
+            file_path: Path to the document file
+            config: Optional configuration to override the document splitter's config
+                
+        Returns:
+            Self for method chaining
+        """
+        if self.doc_splitter is None:
+            raise ValueError("Document splitter is not set")
+        
+        # Use provided config if available
+        original_config = None
+        if config is not None:
+            original_config = self.doc_splitter.config
+            self.doc_splitter.config = config
+        
+        try:
+            # Split the document into nodes using the splitter
+            nodes = self.doc_splitter.run(file_path=file_path)
+            
+            # Store the nodes for later processing
+            self._document_nodes = nodes
+            
+            # Don't set self._context here - we'll process nodes individually
+            return self
+        finally:
+            # Restore original config if we changed it
+            if original_config is not None:
+                self.doc_splitter.config = original_config
     
     def set_context_directly(self, context: str):
         """
@@ -129,6 +172,67 @@ class DatasetGenerator:
         content = response.choices[0].message.content
         self._pairs = self._parser.parse_keyword_pairs(content)
         return self._pairs
+    
+    def generate_from_nodes(self, 
+                        n_pairs_per_node: int = 3, 
+                        language: str = "English", 
+                        temperature: float = 0.75) -> List[KeywordPair]:
+        """
+        Generate sentence-keyword pairs for each document node.
+        
+        Args:
+            n_pairs_per_node: Number of pairs to generate per node
+            language: Language to generate in
+            temperature: Temperature for LLM generation
+        
+        Returns:
+            List of KeywordPair objects from all nodes
+        """
+        if self.llm_client is None:
+            raise ValueError("LLM client is not set")
+        
+        if not hasattr(self, '_document_nodes') or self._document_nodes is None:
+            raise ValueError("No document has been processed. Call process_document first.")
+        
+        all_pairs = []
+        
+        # Process each node individually
+        for i, node in enumerate(self._document_nodes):
+            # Set the context to just this node's content
+            self._context = node.page_content
+            
+            # Generate pairs for this node
+            prompt = self._prompt_template.format(
+                context=self._context,
+                n=n_pairs_per_node,
+                language=language
+            )
+            
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant"},
+                {"role": "user", "content": prompt},
+            ]
+            
+            response = self.llm_client.chat.completions.create(
+                messages=messages, 
+                temperature=temperature
+            )
+            
+            content = response.choices[0].message.content
+            node_pairs = self._parser.parse_keyword_pairs(content)
+            
+            # Add node metadata to each pair if desired
+            for pair in node_pairs:
+                # You could add node metadata here if useful
+                # pair.node_index = i
+                # pair.metadata = node.metadata
+                pass
+            
+            all_pairs.extend(node_pairs)
+        
+        # Store the combined pairs
+        self._pairs = all_pairs
+        return all_pairs
     
     def to_dataframe(self) -> pd.DataFrame:
         """

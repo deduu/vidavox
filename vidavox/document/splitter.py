@@ -7,6 +7,8 @@ from .config import ProcessingConfig, SplitterConfig
 from .loader import LoaderFactory
 from .node import DocumentNodes
 
+from vidavox.utils.script_tracker import log_processing_time
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,6 +21,7 @@ class DocumentSplitter:
         if config.splitter_configs:
             self.splitter_configs.update(config.splitter_configs)
 
+    @log_processing_time
     def split_documents(self, documents: List[Document]) -> List[Document]:
         split_docs = []
         
@@ -48,6 +51,7 @@ class DocumentSplitter:
                 
         return split_docs
     
+    @log_processing_time
     def run(
         self,
         file_path: str,
