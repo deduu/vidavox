@@ -1,11 +1,14 @@
 from typing import List, Dict, Optional
 import pandas as pd
+from datasets import Dataset, DatasetDict
+from dataclasses import asdict, dataclass
+
 from datasets import Dataset
 
-from ..data.models import KeywordPair
-from ..parsers.response_parser import ResponseParser
-from ..prompts.templates import PromptTemplates
-from ..utils.hub_utils import HuggingFaceUploader
+from .models import KeywordPair
+from .response_parser import ResponseParser
+from .prompt_template import PromptTemplates
+from vidavox.utils.hub_utils import HuggingFaceUploader
 
 class DatasetGenerator:
     """
