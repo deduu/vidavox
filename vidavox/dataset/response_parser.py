@@ -1,8 +1,13 @@
 import json
 import re
+import logging
 from typing import List, Dict
 
+
 from .models import KeywordPair
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ResponseParser:
     """Parses LLM responses to extract structured data like keyword pairs."""
@@ -18,7 +23,7 @@ class ResponseParser:
         Returns:
             List of KeywordPair objects (each containing a sentence/question and its corresponding keywords)
         """
-        print(f"content: {content}")
+        logger.info(f"parsed content: {content}")
         try:
             # First, try extracting a well-formatted JSON array
             matches = re.findall(r'\[\s*\{\s*"(sentence|question)"\s*:.*?\}\s*\]', content, re.DOTALL)
