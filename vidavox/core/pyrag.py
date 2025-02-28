@@ -258,6 +258,51 @@ class RAG_Engine:
         except Exception as e:
             logger.error(f"Failed to process CSV file {file_path}: {e}")
             return []
+    
+    def _process_excel_as_dataframe(
+        self, 
+        file_path: str, 
+        text_col: str,
+        metadata_cols: List[str]
+    ) -> List[Tuple[str, str, Dict]]:
+        """Process an Excel file as a DataFrame."""
+        try:
+            df = pd.read_excel(file_path)
+            batch_docs = []
+            file_name = os.path.basename(file_path)
+
+            # Verify text column exists
+            if text_col not in df.columns:
+                logger.error(f"Text column '{text_col}' not found in Excel file {file_name}. Skipping file.")
+                return []
+
+            # Process each row
+            for idx, row in df.iterrows():
+                doc_id = f"{file_name}_{idx}"
+                doc_text = str(row[text_col])
+
+                # Create metadata dictionary
+                doc_metadata = {
+                    'source': file_path,
+                    'file_name': file_name,
+                    'row_index': idx,
+                    'file_type': 'excel'
+                }
+
+                # Add specified metadata columns
+                for col in metadata_cols:
+                    if col in df.columns:
+                        doc_metadata[col] = row[col]
+
+                batch_docs.append((doc_id, doc_text, doc_metadata))
+
+            logger.info(f"Successfully processed {len(df)} rows from Excel file {file_name}")
+            return batch_docs
+
+        except Exception as e:
+            logger.error(f"Failed to process Excel file {file_path}: {e}")
+            return []
+
 
     def _process_file(self, file_path: str, config: ProcessingConfig, chunker: Optional[Callable] = None) -> List[Tuple[str, str, Dict]]:
         """Process a single file into the required document format."""
@@ -295,6 +340,7 @@ class RAG_Engine:
         chunker: Optional[Callable] = None,
         show_progress: bool = False,
         load_csv_as_pandas_dataframe: Optional[bool] = False,
+        load_excel_as_pandas_dataframe: bool = False,
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None
     ) -> 'RAG_Engine':
@@ -307,11 +353,15 @@ class RAG_Engine:
             chunker (Callable, optional): Optional custom chunking function
             show_progress (bool): Whether to show progress bar
             load_as_pandas_dataframe (bool): If True, processes .csv files using pandas
+            load_excel_as_pandas_dataframe (bool): If True, processes .xlsx/.xls files using pandas
             text_col (str, optional): Column name containing main text (required for CSV processing)
             metadata_cols (List[str], optional): List of columns to include as metadata for CSV files
         """
         if load_csv_as_pandas_dataframe and not text_col:
             raise ValueError("text_col must be specified when load_as_pandas_dataframe is True")
+        
+        if load_excel_as_pandas_dataframe and not text_col:
+            raise ValueError("text_col must be specified when load_excel_as_pandas_dataframe is True")
             
         config = config or ProcessingConfig()
         metadata_cols = metadata_cols or []
@@ -324,6 +374,7 @@ class RAG_Engine:
         # Collect processing statistics
         stats = {
             'csv_files_processed': 0,
+            'excel_files_processed': 0,
             'other_files_processed': 0,
             'failed_files': 0
         }
@@ -332,7 +383,9 @@ class RAG_Engine:
         for file_path in iterator:
             try:
                 is_csv = file_path.lower().endswith('.csv')
+                is_excel = file_path.lower().endswith('.xlsx') or file_path.lower().endswith('.xls')
                 
+                # 1) CSV processing
                 if is_csv and load_csv_as_pandas_dataframe:
                     file_docs = self._process_csv_as_dataframe(
                         file_path, 
@@ -342,6 +395,18 @@ class RAG_Engine:
                     # print(f"file_docs: {file_docs}")
                     if file_docs:
                         stats['csv_files_processed'] += 1
+
+                # 2) Excel processing
+                elif is_excel and load_excel_as_pandas_dataframe:
+                    file_docs = self._process_excel_as_dataframe(
+                        file_path,
+                        text_col=text_col,
+                        metadata_cols=metadata_cols
+                    )
+                    if file_docs:
+                        stats['excel_files_processed'] += 1
+
+                # 3) Other file types
                 else:
                     file_docs = self._process_file(file_path, config, chunker)
                     if file_docs:
@@ -371,6 +436,7 @@ class RAG_Engine:
         logger.info(
             f"Processing complete:\n"
             f"- CSV files processed: {stats['csv_files_processed']}\n"
+            f"- Excel files processed: {stats['excel_files_processed']}\n"
             f"- Other files processed: {stats['other_files_processed']}\n"
             f"- Failed files: {stats['failed_files']}"
         )
@@ -386,6 +452,7 @@ class RAG_Engine:
         show_progress: bool = False,
         allowed_extensions: Optional[List[str]] = None,
         load_csv_as_pandas_dataframe: Optional[bool] = False,
+        load_excel_as_pandas_dataframe: bool = False,
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None
     ) -> 'RAG_Engine':
@@ -400,6 +467,7 @@ class RAG_Engine:
             show_progress (bool): Whether to show progress bar
             allowed_extensions (List[str], optional): List of allowed file extensions
             load_as_pandas_dataframe (bool): If True, processes .csv files using pandas
+            load_excel_as_pandas_dataframe (bool): If True, processes .xlsx/.xls files using pandas
             text_col (str, optional): Column name containing main text (required for CSV processing)
             metadata_cols (List[str], optional): List of columns to include as metadata for CSV files
         """
@@ -416,6 +484,7 @@ class RAG_Engine:
             chunker=chunker,
             show_progress=show_progress,
             load_csv_as_pandas_dataframe=load_csv_as_pandas_dataframe,
+            load_excel_as_pandas_dataframe=load_excel_as_pandas_dataframe,
             text_col=text_col,
             metadata_cols=metadata_cols
         )
