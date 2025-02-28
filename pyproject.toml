@@ -35,7 +35,7 @@ unstructured = "*"
 keybert = "*"
 markdown = "*"
 datasets = "==3.2.0"
-protobuf = "<4.0.0"
+protobuf = ">=3.20,<6.0.0"
 openpyxl = "^3.1.5"
 
 [tool.poetry.dev-dependencies]
@@ -46,5 +46,7 @@ smolagents = "^1.9.2"
 [tool.poetry.group.dev.dependencies]
 asyncpg = "^0.30.0"
 psycopg2-binary = "^2.9.10"
+pipdeptree = "^2.25.0"
+grep = "^0.3.2"
 
 
