@@ -1,5 +1,45 @@
 class PromptTemplates:
     """Collection of prompt templates for different tasks."""
+
+    @staticmethod
+    def get_default_bio_transformation_template() -> str:
+        """
+        Get the default prompt template for transforming question-keywords pairs to BIO annotations.
+        
+        Returns:
+            Default prompt template string.
+        """
+        return """
+        ### Input:
+        Question: {question}
+        Keywords: [{keywords}]
+        
+        ### Instructions:
+        Tokenize the question into words and punctuation. For each token, assign a BIO label as follows:
+        - Label a token as "B-KEY" if it is the first token of a keyword.
+        - Label a token as "I-KEY" if it is a subsequent token of a multi-token keyword.
+        - Otherwise, label the token as "O".
+        
+        Ensure that multi-token keywords are labeled correctly. Provide your answer in the following JSON format exactly:
+        
+        {{
+            "question": "{question}",
+            "tokens": ["token1", "token2", "..."],
+            "labels": ["label1", "label2", "..."]
+        }}
+        
+        For example, 
+        {{
+            "question": "The quick brown fox jumps over the lazy dog?",
+            "tokens": ["The", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog", "?"],
+            "labels": ["O", "O", "O", "B-KEY", "I-KEY", "O", "O", "B-KEY", "I-KEY", "O"]
+        }}
+
+        VERY IMPORTANT: Your response must be valid JSON with no extra commentary.
+        """
+
+    
+
     
     @staticmethod
     def get_default_keyword_extraction_template() -> str:

@@ -173,6 +173,53 @@ class DatasetGenerator:
         self._pairs = self._parser.parse_keyword_pairs(content)
         return self._pairs
     
+    def transform_to_bio(self, 
+                     question: str, 
+                     keywords: List[str], 
+                     temperature: float = 0.75) -> Dict:
+        """
+        Transform a question and its associated keywords into token-level BIO annotations.
+        
+        Args:
+            question: The question text.
+            keywords: List of keywords associated with the question.
+            temperature: Temperature for LLM generation.
+            
+        Returns:
+            A dictionary with the question, tokens, and labels in BIO format.
+        """
+        if self.llm_client is None:
+            raise ValueError("LLM client is not set")
+        
+        # Use the new BIO transformation template.
+        prompt_template = PromptTemplates.get_default_bio_transformation_template()
+        
+        # Format the prompt with the input question and keywords.
+        prompt = prompt_template.format(
+            question=question,
+            keywords=', '.join(keywords)
+        )
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt},
+        ]
+        
+        response = self.llm_client.chat.completions.create(
+            messages=messages, 
+            temperature=temperature
+        )
+        
+        content = response.choices[0].message.content
+
+        print(f"content:")
+        # Here, you should implement a parser to ensure valid JSON is extracted.
+        # For example, assuming you have a method called parse_bio_annotations:
+        # result = self._bio_parser.parse_bio_annotations(content)
+        
+        return content
+
+    
     def generate_from_nodes(self, 
                         n_pairs_per_node: int = 3, 
                         language: str = "English", 
