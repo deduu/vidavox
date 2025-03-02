@@ -96,6 +96,12 @@ class DocumentManager:
         """Return the total number of documents."""
         return len(self.documents)
     
+    def get_all_contents(self) -> str:
+        """Return a single string containing all document texts concatenated with newlines."""
+        docs = self.documents.copy()
+        text_content = "\n".join(docs)
+        return text_content
+
     def clear(self) -> None:
         """Clear all documents."""
         self.doc_ids.clear()
