@@ -101,6 +101,27 @@ class DocumentManager:
         docs = self.documents.copy()
         text_content = "\n".join(docs)
         return text_content
+    
+    # def get_content_dict(self) -> Dict[str, str]:
+    #     """Return a dictionary mapping document name to their contents."""
+
+    #     results = {}
+    #     for doc_id, doc in zip(self.doc_ids, self.documents):
+    #         file_name = self.meta_data[doc_id].get('file_name')
+    #         content = "\n".join(doc)
+    #         results[file_name] = content
+    #     return results
+
+    def get_content_dict(self) -> Dict[str, str]:
+        """Return a dictionary mapping document name to its content."""
+        results = {}
+        for doc, meta in zip(self.documents, self.meta_data):
+            file_name = meta.get('file_name', 'unknown')  # default if not provided
+            # Assuming each doc is a list of strings (chunks):
+            content = "\n".join(doc)
+            results[file_name] = content
+        return results
+
 
     def clear(self) -> None:
         """Clear all documents."""

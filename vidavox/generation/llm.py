@@ -90,13 +90,14 @@ class Completions:
         self.api_key = api_key
         self.default_model = default_model
 
-    def create(self, messages, temperature=0.7, model=None):
+    def create(self, messages, temperature=0.7, model=None, **kwargs):
         """
         Create a chat completion using the specified or default model.
         
         :param messages: A list of messages, e.g., [{"role": "user", "content": "Hello"}]
         :param temperature: Creativity parameter.
         :param model: Optional model override; if not provided, the default model is used.
+        :param kwargs: Additional parameters like top_k, top_p, repeat_penalty, etc.
         :return: The JSON response from the provider's API.
         """
         # Use the provided model if given; otherwise, fall back to the default
@@ -119,14 +120,19 @@ class Completions:
             payload = {
                 "model": model_to_use,
                 "prompt": prompt,
-                "stream": False
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                     **kwargs
+                }
             }
             headers = {"Content-Type": "application/json"}
         else:
             payload = {
                 "model": model_to_use,
                 "messages": messages,
-                "temperature": temperature
+                "temperature": temperature,
+                
             }
             headers = {
                 "Content-Type": "application/json",
