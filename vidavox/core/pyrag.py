@@ -580,6 +580,47 @@ class RAG_Engine:
         results = await self.search_async(query_text, keywords, top_k, threshold, prefixes)
         return self._process_search_results(results, result_formatter=result_formatter)
     
+    def retrieve_best_chunk_per_document(
+        self,
+        query_text: str,
+        keywords: Optional[List[str]] = None,
+        per_doc_top_n: int = 5,
+        threshold: float = 0.53,
+        prefixes=None,
+        result_formatter: Optional[BaseResultFormatter] = None,
+        search_mode: Optional[SearchMode] = SearchMode.HYBRID,
+        sort_globally: Optional[bool] = False
+    ) -> List[Dict]:
+        """
+        Retrieve the best matching chunks per document for a given query.
+        
+        This method first retrieves candidate chunks using the advanced search, groups them by document,
+        and then processes and formats the results.
+        
+        Args:
+            query_text (str): The search query.
+            keywords (List[str], optional): Keywords for BM25.
+            per_doc_top_n (int): Maximum number of chunks to return per document.
+            threshold (float): Minimum score threshold.
+            prefixes: Optional prefixes to filter document IDs.
+            result_formatter (BaseResultFormatter, optional): Formatter to standardize output.
+            search_mode (SearchMode, optional): The search mode to use.
+            sort_globally (bool, optional): Whether to sort results across all documents.
+        
+        Returns:
+            List[Dict]: A list of formatted search results.
+        """
+        # Retrieve candidate chunks grouped by document.
+        candidate_results = self.search_best_chunk_per_document(
+            query_text, keywords, per_doc_top_n=per_doc_top_n,
+            threshold=threshold, prefixes=prefixes, search_mode=search_mode,
+            sort_globally=sort_globally
+        )
+        
+        # Process the candidate results into a standard format.
+        return self._process_search_results(candidate_results, result_formatter=result_formatter)
+
+    
     def _process_search_results(self, results: List[Tuple[str, float]], result_formatter: Optional[BaseResultFormatter] = None) -> List[Dict]:
         """Process search results into a standardized format."""
         if not results:
@@ -654,7 +695,7 @@ class RAG_Engine:
 
     #     return list(best_chunks.values())
 
-    def retrieve_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False):
+    def search_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False):
         """
         Perform an advanced search and return the top 'per_doc_top_n' chunks per document.
         Assumes that the doc_id is structured as: fileName_timestamp_chunk{idx}.
