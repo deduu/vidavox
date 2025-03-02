@@ -659,41 +659,6 @@ class RAG_Engine:
         
         return retrieved_docs if retrieved_docs else [{"id": "None.", "url": "None.", "text": None}]
     
-    # def retrieve_best_chunk_per_document(self, query_text: str, keywords: Optional[List[str]] = None, 
-    #                                    threshold: float = 0.4, top_k: int = 5, prefixes=None) -> List[Dict]:
-    #     """Retrieve only the best matching chunk from each document."""
-    #     results = self.hybrid_search.advanced_search(
-    #         query_text, keywords=keywords, top_n=top_k, threshold=threshold, prefixes=prefixes
-    #     )
-        
-    #     if not results:
-    #         return [{"id": "None.", "url": "None.", "text": None, "score": None}]
-        
-    #     best_chunks = {}
-        
-    #     for doc_id, score in results:
-    #         try:
-    #             index = self.doc_manager.doc_ids.index(doc_id)
-    #             meta = self.doc_manager.meta_data[index]
-    #             file_name = meta.get("file_name")
-                
-    #             if not file_name:
-    #                 continue
-
-    #             if file_name not in best_chunks or score > best_chunks[file_name]["score"]:
-    #                 best_chunks[file_name] = {
-    #                     "id": doc_id,
-    #                     "url": meta.get("source", "unknown_url"),
-    #                     "text": self.doc_manager.documents[index],
-    #                     "score": score,
-    #                     "meta_data": meta,
-    #                 }
-                    
-    #         except (ValueError, IndexError) as e:
-    #             logger.error(f"Error processing chunk {doc_id}: {e}")
-    #             continue
-
-    #     return list(best_chunks.values())
 
     def search_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False):
         """
