@@ -101,16 +101,6 @@ class DocumentManager:
         docs = self.documents.copy()
         text_content = "\n".join(docs)
         return text_content
-    
-    # def get_content_dict(self) -> Dict[str, str]:
-    #     """Return a dictionary mapping document name to their contents."""
-
-    #     results = {}
-    #     for doc_id, doc in zip(self.doc_ids, self.documents):
-    #         file_name = self.meta_data[doc_id].get('file_name')
-    #         content = "\n".join(doc)
-    #         results[file_name] = content
-    #     return results
 
     def get_content_dict(self) -> Dict[str, str]:
         """Return a dictionary mapping document name to its content."""
@@ -220,7 +210,8 @@ from typing import List, Optional, Any, Dict, Tuple, Callable, Union
 
 from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search, SearchMode
 from vidavox.utils.token_counter import TokenCounter
-from vidavox.document import DocumentSplitter, ProcessingConfig
+from vidavox.document import DocumentSplitter, ProcessingConfig, DocumentNodes
+
 
 class RAG_Engine:
     """Main Retrieval Augmented Generation engine with modular components."""
@@ -233,11 +224,15 @@ class RAG_Engine:
         
         # Initialize document store
         self.doc_manager = DocumentManager()
+
+        # Initialize nodes
+        self.nodes = None
         
         # Initialize search components
         self.bm25_wrapper = BM25_search()
         self.faiss_wrapper = FAISS_search(embedding_model)
         self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
+        
         
         # Results cache
         self.results = []
@@ -340,6 +335,8 @@ class RAG_Engine:
         try:
             # Split the document into nodes
             nodes = DocumentSplitter(config).run(file_path, chunker)
+
+            self.nodes = nodes
             
             # Process each chunk
             for idx, doc in enumerate(nodes):
@@ -753,6 +750,10 @@ class RAG_Engine:
         except Exception as e:
             logger.error(f"Async search failed: {e}")
             return []
+    
+    def get_nodes(self) -> Optional[DocumentNodes]:
+        """Retrieve the nodes."""
+        return self.nodes
     
     def get_document(self, doc_id: str) -> Optional[str]:
         """Retrieve a document by its ID."""
