@@ -107,9 +107,8 @@ class DocumentManager:
         results = {}
         for doc, meta in zip(self.documents, self.meta_data):
             file_name = meta.get('file_name', 'unknown')  # default if not provided
-            # Assuming each doc is a list of strings (chunks):
-            content = "\n".join(doc)
-            results[file_name] = content
+            # If 'doc' is already a string, no need to join it
+            results[file_name] = doc  
         return results
 
 
