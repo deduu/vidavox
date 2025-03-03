@@ -10,15 +10,14 @@ from langchain.text_splitter import (
 class SplitterConfig:
     splitter_class: Type[TextSplitter]
     params: Dict[str, Any]
-
 @dataclass
 class ProcessingConfig:
     chunk_size: int = 5000
     chunk_overlap: int = 500
     splitter_configs: Optional[Dict[str, SplitterConfig]] = None
 
-    @classmethod
-    def get_default_splitter_configs(cls) -> Dict[str, SplitterConfig]:
+    # Convert to an instance method so it uses instance attributes
+    def get_default_splitter_configs(self) -> Dict[str, SplitterConfig]:
         return {
             ".md": SplitterConfig(
                 splitter_class=MarkdownHeaderTextSplitter,
@@ -35,8 +34,8 @@ class ProcessingConfig:
             "default": SplitterConfig(
                 splitter_class=RecursiveCharacterTextSplitter,
                 params={
-                    "chunk_size": cls.chunk_size,
-                    "chunk_overlap": cls.chunk_overlap,
-                }
+                    "chunk_size": self.chunk_size,
+                    "chunk_overlap": self.chunk_overlap,
+                },
             )
         }
