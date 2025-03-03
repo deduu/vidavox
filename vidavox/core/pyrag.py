@@ -326,7 +326,7 @@ class RAG_Engine:
             return []
 
 
-    def _process_file(self, file_path: str, config: ProcessingConfig, chunker: Optional[Callable] = None) -> List[Tuple[str, str, Dict]]:
+    def _process_file(self, file_path: str, config: ProcessingConfig, chunker: Optional[Callable] = None, use_recursive:bool=True) -> List[Tuple[str, str, Dict]]:
         """Process a single file into the required document format."""
         processor = FileProcessor()
         file_name = os.path.basename(file_path)
@@ -334,7 +334,7 @@ class RAG_Engine:
 
         try:
             # Split the document into nodes
-            nodes = DocumentSplitter(config).run(file_path, chunker)
+            nodes = DocumentSplitter(config, use_recursive=use_recursive).run(file_path, chunker)
 
             self.nodes = nodes
             
@@ -366,7 +366,8 @@ class RAG_Engine:
         load_csv_as_pandas_dataframe: Optional[bool] = False,
         load_excel_as_pandas_dataframe: bool = False,
         text_col: Optional[str] = None,
-        metadata_cols: Optional[List[str]] = None
+        metadata_cols: Optional[List[str]] = None,
+        use_recursive:bool=True
     ) -> 'RAG_Engine':
         """
         Build engine from a list of file paths, with mixed format support.
@@ -432,7 +433,7 @@ class RAG_Engine:
 
                 # 3) Other file types
                 else:
-                    file_docs = self._process_file(file_path, config, chunker)
+                    file_docs = self._process_file(file_path, config, chunker, use_recursive)
                     if file_docs:
                         stats['other_files_processed'] += 1
                 
@@ -478,7 +479,8 @@ class RAG_Engine:
         load_csv_as_pandas_dataframe: Optional[bool] = False,
         load_excel_as_pandas_dataframe: bool = False,
         text_col: Optional[str] = None,
-        metadata_cols: Optional[List[str]] = None
+        metadata_cols: Optional[List[str]] = None,
+        use_recursive:bool=True
     ) -> 'RAG_Engine':
         """
         Build engine from all files in a directory.
@@ -510,7 +512,8 @@ class RAG_Engine:
             load_csv_as_pandas_dataframe=load_csv_as_pandas_dataframe,
             load_excel_as_pandas_dataframe=load_excel_as_pandas_dataframe,
             text_col=text_col,
-            metadata_cols=metadata_cols
+            metadata_cols=metadata_cols,
+            use_recursive=use_recursive
         )
   
 
