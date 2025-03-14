@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 class ConversationMemoryInterface(ABC):
@@ -51,24 +52,86 @@ class AgentMemory:
         await self.memory.initialize()
         return self.memory
 
-    async def add_user(self, username: str, hashed_password: str):
+    async def add_user(self, phone_number: str, username: str=None) -> Tuple[Dict[str, Any], bool]:
         """
-        Adds a new user to the database.
-        Returns the created user or existing user if found.
+        Creates a user if doesn't exist. Returns (user_dict, is_new).
         """
-        from vidavox.memory.models.user import User  # Import here to avoid circular dependencies
-        async with self.memory.async_session() as session:
-            result = await session.execute(select(User).filter_by(username=username))
-            existing_user = result.scalars().first()
-            if existing_user:
-                return existing_user
+        from vidavox.memory.models.user import User
 
-            new_user = User(
-                username=username,
-                hashed_password=hashed_password,
-                created_at=datetime.utcnow()
+        async with self.memory.async_session() as session:
+            # Check if user already exists
+            result = await session.execute(
+                select(User).where(User.phone_number == phone_number)
             )
+            user = result.scalars().first()
+
+            if user:
+                # Return existing user as dict + is_new=False
+                return {
+                    "id": user.id,
+                    "phone_number": user.phone_number,
+                    "username": user.username,
+                    "disclaimer_sent": user.disclaimer_sent
+                }, False
+
+            # Otherwise, create new
+            new_user = User(phone_number=phone_number, username=username)
             session.add(new_user)
             await session.commit()
-            return new_user
 
+            # Reload or return known fields
+            await session.refresh(new_user)  # refresh from DB if needed
+            return {
+                "id": new_user.id,
+                "phone_number": new_user.phone_number,
+                "username": new_user.username,
+                "disclaimer_sent": new_user.disclaimer_sent
+            }, True
+
+    
+    async def get_user_data(self, username: str) -> dict:
+        """
+        Retrieves user data from the database and ensures it's returned as a dictionary.
+        """
+        from vidavox.memory.models.user import User  # Avoid circular dependency
+
+        async with self.memory.async_session() as session:
+            result = await session.execute(select(User).filter_by(username=username))
+            user = result.scalars().first()
+
+            if user:
+                # Return a sanitized dict (filter out SQLAlchemy overhead fields)
+                user_dict = {
+                    "id": user.id,
+                    "phone_number": user.phone_number,
+                    "username": user.username,
+                    "disclaimer_sent": user.disclaimer_sent,
+                    # Add other fields as needed
+                }
+                return user_dict
+            else:
+                return {}  # ✅ Ensure it always returns a dictionary
+
+    
+    async def update_user_data(self, phone_number: str, data: Dict[str, Any]) -> None:
+        """
+        Updates user data in the DB by phone_number with the given dict.
+        Raises ValueError if the user does not exist.
+        """
+        from vidavox.memory.models.user import User
+
+        async with self.memory.async_session() as session:
+            result = await session.execute(
+                select(User).where(User.phone_number == phone_number)
+            )
+            user = result.scalars().first()
+
+            if not user:
+                raise ValueError(f"User with phone_number '{phone_number}' not found.")
+
+            # Update each field
+            for key, value in data.items():
+                setattr(user, key, value)
+
+            # Because user is already in session, just commit
+            await session.commit()

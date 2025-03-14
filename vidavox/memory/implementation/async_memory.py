@@ -5,8 +5,8 @@ from sqlalchemy.orm import sessionmaker
 from vidavox.settings import DatabaseSettings, MemorySettings
 from vidavox.memory.memory import ConversationMemoryInterface
 from vidavox.utils.token_counter import SimpleTokenCounter, TikTokenCounter
-from vidavox.memory.models.base import Base
-from vidavox.memory.models.message import Message
+from vidavox.memory.models import Base,Message, User
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 from datetime import datetime
 from sqlalchemy.future import select
@@ -37,14 +37,24 @@ class AsyncPostgresConversationMemory(ConversationMemoryInterface):
             await conn.run_sync(Base.metadata.create_all)
     
     # In your async_memory.py
-    async def add_message(self, user_id: int, role: str, message: str, timestamp: Optional[datetime] = None) -> None:
+    async def add_message(self, phone_number: str, role: str, message: str, source: Optional[str] = None, timestamp: Optional[datetime] = None) -> None:
+        from vidavox.memory.models.user import User  # Import here to avoid circular dependencies
         async with self.async_session() as session:
+            # Look up the user by phone_number
+            result = await session.execute(select(User).filter_by(phone_number=phone_number))
+            user = result.scalars().first()
+            if user is None:
+                raise ValueError(f"User with phone_number '{phone_number}' not found")
+            
             if timestamp is None:
-                timestamp = datetime.utcnow()
-            msg = Message(user_id=user_id, role=role, message=message, timestamp=timestamp)
+                timestamp = datetime.now(ZoneInfo("Asia/Jakarta"))
+            
+            # Create the message using the found user's id
+            msg = Message(user_id=user.id, role=role, message=message, source=source,timestamp=timestamp)
             session.add(msg)
             await session.commit()
-            await self.trim_memory_if_needed(session)
+            # await self.trim_memory_if_needed(session)
+
 
 
     async def get_all_history(self) -> List[Dict]:
@@ -56,15 +66,17 @@ class AsyncPostgresConversationMemory(ConversationMemoryInterface):
             return [{"role": msg.role, "content": msg.message} for msg in messages]
     
     async def get_history(
-    self, 
-    user_id: Optional[int] = None, 
-    token_limit: Optional[int] = None, 
-    last_n: Optional[int] = None
-) -> List[Dict]:
+        self, 
+        phone_number: Optional[str] = None, 
+        token_limit: Optional[int] = None, 
+        last_n: Optional[int] = None
+    ) -> List[Dict]:
         async with self.async_session() as session:
+            # Build the base query
             query = select(Message).order_by(Message.timestamp)
-            if user_id is not None:
-                query = query.filter(Message.user_id == user_id)
+            if phone_number is not None:
+                # Join with User table and filter by phone_number
+                query = query.join(User).filter(User.phone_number == phone_number)
             result = await session.execute(query)
             messages = result.scalars().all()
 
@@ -88,11 +100,9 @@ class AsyncPostgresConversationMemory(ConversationMemoryInterface):
             if last_n is not None and len(selected) >= last_n:
                 break
 
-        # Reverse again to return messages in chronological order.
+        # Reverse to return in chronological order
         selected.reverse()
-        return [{"role": msg.role, "content": msg.message} for msg in selected]
-
-
+        return [{"role": msg.role, "parts": msg.message} for msg in selected]
 
 
     async def clear_memory(self) -> None:

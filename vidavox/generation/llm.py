@@ -1,5 +1,6 @@
 import os
 import requests
+import base64
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -113,37 +114,59 @@ class Completions:
         # Build the payload and headers
         # Handle Ollama's API payload structure
         if self.provider == "ollama":
-            prompt = "\n".join([msg["content"] for msg in messages if msg["role"] == "user"])
-
-            # print(f"Prompt: {prompt}")
-            # print(f"Model: {model_to_use}")
-            payload = {
-                "model": model_to_use,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                     **kwargs
+            # Check if any message contains images
+            has_images = False
+            for msg in messages:
+                if isinstance(msg.get("content"), list):
+                    for content_item in msg["content"]:
+                        if isinstance(content_item, dict) and content_item.get("type") == "image":
+                            has_images = True
+                            break
+                    if has_images:
+                        break
+            
+            if has_images:
+                # VLM case: Process messages with images for Ollama
+                processed_messages = self._process_ollama_vlm_messages(messages)
+                
+                payload = {
+                    "model": model_to_use,
+                    "messages": processed_messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        **kwargs
+                    }
                 }
-            }
+            else:
+                # Standard text case
+                prompt = "\n".join([msg["content"] for msg in messages if msg["role"] == "user"])
+                
+                payload = {
+                    "model": model_to_use,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        **kwargs
+                    }
+                }
+            
             headers = {"Content-Type": "application/json"}
         else:
             payload = {
                 "model": model_to_use,
                 "messages": messages,
                 "temperature": temperature,
-                
             }
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}"
             }
         
-    
         # Make the POST request
         response = requests.post(url, headers=headers, json=payload)
 
-      
         try:
             response.raise_for_status()
             response_data = response.json()
@@ -181,8 +204,63 @@ class Completions:
             print(f"Response text: {response.text}")
             raise
 
-        # Convert the raw response into a Response object with proper attribute access
-        # return Response(response_data)
+    def _process_ollama_vlm_messages(self, messages):
+        """
+        Process message format for Ollama VLM models.
+        
+        :param messages: Original messages with possible image content
+        :return: Processed messages in Ollama VLM format
+        """
+        processed_messages = []
+        
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            
+            # If content is a string, keep it as is
+            if isinstance(content, str):
+                processed_messages.append({
+                    "role": role,
+                    "content": content
+                })
+                continue
+            
+            # Handle multimodal content (list with text and images)
+            if isinstance(content, list):
+                processed_content = ""
+                for item in content:
+                    if item.get("type") == "text":
+                        processed_content += item["text"]
+                    elif item.get("type") == "image":
+                        # Handle image: convert to base64 for Ollama
+                        img_data = item.get("image_url", {}).get("url", "") 
+                        
+                        # If the image is a data URL
+                        if img_data.startswith("data:image"):
+                            # Extract the base64 part
+                            img_base64 = img_data.split(",")[1]
+                        elif img_data.startswith("http"):
+                            # Download the image and convert to base64
+                            img_response = requests.get(img_data)
+                            img_response.raise_for_status()
+                            img_base64 = base64.b64encode(img_response.content).decode("utf-8")
+                        elif os.path.exists(img_data):
+                            # Read from local file
+                            with open(img_data, "rb") as img_file:
+                                img_base64 = base64.b64encode(img_file.read()).decode("utf-8")
+                        else:
+                            # Assume it's already base64
+                            img_base64 = img_data
+                        
+                        # Ollama expects images in the format "![](data:image/jpeg;base64,<base64_data>)"
+                        processed_content += f"\n![](data:image/jpeg;base64,{img_base64})\n"
+                
+                processed_messages.append({
+                    "role": role,
+                    "content": processed_content
+                })
+        
+        return processed_messages
 
 
 class Response:
@@ -227,4 +305,3 @@ class Message:
         for key, value in message_data.items():
             if not hasattr(self, key):
                 setattr(self, key, value)
-      
