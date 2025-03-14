@@ -707,7 +707,7 @@ class RAG_Engine:
         # print(f"candidate_results: {candidate_results}")
         
         if not candidate_results:
-            self.logger.info("No candidate results found.")
+            logger.info("No candidate results found.")
             return []
         
         # Group the results by document.
