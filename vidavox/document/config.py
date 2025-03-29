@@ -19,18 +19,18 @@ class ProcessingConfig:
     # Convert to an instance method so it uses instance attributes
     def get_default_splitter_configs(self) -> Dict[str, SplitterConfig]:
         return {
-            ".md": SplitterConfig(
-                splitter_class=MarkdownHeaderTextSplitter,
-                params={
-                    "headers_to_split_on": [
-                        ("#", "Header 1"),
-                        ("##", "Header 2"),
-                        ("###", "Header 3"),
-                    ],
-                    "return_each_line": True,
-                    "strip_headers": True,
-                }
-            ),
+            # ".md": SplitterConfig(
+            #     splitter_class=MarkdownHeaderTextSplitter,
+            #     params={
+            #         "headers_to_split_on": [
+            #             ("#", "Header 1"),
+            #             ("##", "Header 2"),
+            #             ("###", "Header 3"),
+            #         ],
+            #         "return_each_line": True,
+            #         "strip_headers": True,
+            #     }
+            # ),
             "default": SplitterConfig(
                 splitter_class=RecursiveCharacterTextSplitter,
                 params={

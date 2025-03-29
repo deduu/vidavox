@@ -1,5 +1,6 @@
 # Core components module (rag_components.py)
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional
@@ -7,6 +8,8 @@ from dataclasses import dataclass, asdict
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
+
+from vidavox.utils.pretty_logger import pretty_json_log
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -43,80 +46,72 @@ class DefaultResultFormatter(BaseResultFormatter):
             "score": result.score,
         }
 
+@dataclass
+class Document:
+    doc_id: str
+    text: str
+    meta_data: Dict[str, any]
+
 class DocumentManager:
-    """Manages document storage and basic operations."""
-    
     def __init__(self):
-        self.doc_ids = []
-        self.documents = []
-        self.meta_data = []
-        
+        self.documents: Dict[str, Document] = {}
+        self.lock = threading.Lock()  # for thread safety
+
     def add_document(self, doc_id: str, text: str, meta_data: Optional[Dict] = None) -> None:
-        """Add a single document to the collection."""
-        self.doc_ids.append(doc_id)
-        self.documents.append(text)
-        self.meta_data.append(meta_data or {})
-        
-    def add_documents(self, docs: List[Tuple[str, str, Optional[Dict]]]) -> None:
-        """Add multiple documents to the collection."""
-        for doc_id, text, meta in docs:
-            self.add_document(doc_id, text, meta)
+        with self.lock:
+            self.documents[doc_id] = Document(doc_id, text, meta_data or {})
     
+    def add_documents(self, docs: List[Tuple[str, str, Dict]]) -> None:
+        with self.lock:
+            new_docs = {doc_id: Document(doc_id, text, meta_data or {}) for doc_id, text, meta_data in docs}
+            self.documents.update(new_docs)
+
     def get_document(self, doc_id: str) -> Optional[str]:
-        """Retrieve a document by its ID."""
-        try:
-            index = self.doc_ids.index(doc_id)
-            return self.documents[index]
-        except ValueError:
-            logger.warning(f"Document ID {doc_id} not found.")
-            return None
-    
+        with self.lock:
+            doc = self.documents.get(doc_id)
+            if doc:
+                return doc.text
+            else:
+                logger.warning(f"Document ID {doc_id} not found.")
+                return None
+
     def get_metadata(self, doc_id: str) -> Optional[Dict]:
-        """Retrieve metadata for a document by its ID."""
-        try:
-            index = self.doc_ids.index(doc_id)
-            return self.meta_data[index]
-        except ValueError:
-            logger.warning(f"Document ID {doc_id} not found.")
-            return None
-    
+        with self.lock:
+            doc = self.documents.get(doc_id)
+            if doc:
+                return doc.meta_data
+            else:
+                logger.warning(f"Document ID {doc_id} not found.")
+                return None
+
     def delete_document(self, doc_id: str) -> bool:
-        """Remove a document from the collection."""
-        try:
-            index = self.doc_ids.index(doc_id)
-            del self.doc_ids[index]
-            del self.documents[index]
-            del self.meta_data[index]
-            return True
-        except ValueError:
-            logger.warning(f"Cannot delete: Document ID {doc_id} not found.")
+        with self.lock:
+            if doc_id in self.documents:
+                del self.documents[doc_id]
+                return True
+            logger.warning(f"Document ID {doc_id} not found.")
             return False
-    
+
     def get_document_count(self) -> int:
-        """Return the total number of documents."""
-        return len(self.documents)
-    
+        with self.lock:
+            return len(self.documents)
+
     def get_all_contents(self) -> str:
-        """Return a single string containing all document texts concatenated with newlines."""
-        docs = self.documents.copy()
-        text_content = "\n".join(docs)
-        return text_content
+        with self.lock:
+            return "\n".join(doc.text for doc in self.documents.values())
 
-    def get_content_dict(self) -> Dict[str, str]:
-        """Return a dictionary mapping document name to its content."""
-        results = {}
-        for doc, meta in zip(self.documents, self.meta_data):
-            file_name = meta.get('file_name', 'unknown')  # default if not provided
-            # If 'doc' is already a string, no need to join it
-            results[file_name] = doc  
-        return results
-
+    def get_content_dict(self) -> Dict[str, List[str]]:
+        # Group texts by file_name; if duplicate names exist, store them in a list.
+        content_dict = {}
+        with self.lock:
+            for doc in self.documents.values():
+                file_name = doc.meta_data.get('file_name', 'unknown')
+                content_dict.setdefault(file_name, []).append(doc.text)
+        return content_dict
 
     def clear(self) -> None:
-        """Clear all documents."""
-        self.doc_ids.clear()
-        self.documents.clear()
-        self.meta_data.clear()
+        with self.lock:
+            self.documents.clear()
 
 
 class FileProcessor:
@@ -215,9 +210,10 @@ from vidavox.document import DocumentSplitter, ProcessingConfig, DocumentNodes
 class RAG_Engine:
     """Main Retrieval Augmented Generation engine with modular components."""
     
-    def __init__(self, embedding_model: str = 'all-MiniLM-L6-v2', use_async: bool = False):
+    def __init__(self, embedding_model: str = 'all-MiniLM-L6-v2', use_async: bool = False, show_docs: bool = False):
         """Initialize the RAG engine with all required components."""
         self.use_async = use_async
+        self.show_docs = show_docs
         self.token_counter = TokenCounter()
         self.embedding_model = embedding_model
         
@@ -232,6 +228,7 @@ class RAG_Engine:
         self.faiss_wrapper = FAISS_search(embedding_model)
         self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
         
+
         
         # Results cache
         self.results = []
@@ -348,6 +345,9 @@ class RAG_Engine:
                 combined_meta = {**file_meta, **doc.metadata}
                 
                 batch_docs.append((doc_id, doc.page_content, combined_meta))
+
+                if self.show_docs:
+                    pretty_json_log(logger, batch_docs, "batch_docs:")
                 
             logger.info(f"Successfully processed {len(nodes)} chunks from {file_name}")
             
@@ -441,6 +441,7 @@ class RAG_Engine:
                     continue
                     
                 batch_docs.extend(file_docs)
+               
                 
                 # Process batch if it reaches threshold
                 if len(batch_docs) >= BATCH_SIZE:
@@ -522,7 +523,7 @@ class RAG_Engine:
         try:
             # Extract components for batch processing
             doc_ids, texts, meta_datas = zip(*docs)
-            # print(f"doc_ids: {doc_ids}, texts: {texts}, meta_datas: {meta_datas}")
+         
             
             # Update document manager
             self.doc_manager.add_documents(docs)
@@ -660,19 +661,23 @@ class RAG_Engine:
         formatter = result_formatter or DefaultResultFormatter()
         
         for doc_id, score in results:
-            if doc_id in seen_docs or doc_id not in self.doc_manager.doc_ids:
+            if doc_id in seen_docs or doc_id not in self.doc_manager.documents:
                 continue
                 
             seen_docs.add(doc_id)
             
             try:
-                index = self.doc_manager.doc_ids.index(doc_id)
-                doc = self.doc_manager.documents[index]
-                meta_data = self.doc_manager.meta_data[index]
-                # url = meta_data.get('source', 'unknown_url')
-                self.results.append(doc)
-                 # Create a SearchResult instance
-                search_result = SearchResult(doc_id=doc_id, text=doc, meta_data=meta_data, score=score)
+                # Directly access the Document object from the dictionary
+                doc_obj = self.doc_manager.documents[doc_id]
+                self.results.append(doc_obj.text)
+                
+                # Create a SearchResult instance
+                search_result = SearchResult(
+                    doc_id=doc_id,
+                    text=doc_obj.text,
+                    meta_data=doc_obj.meta_data,
+                    score=score
+                )
                 # Format the result using the formatter
                 formatted_result = formatter.format(search_result)
                
@@ -704,7 +709,7 @@ class RAG_Engine:
         # Retrieve a large candidate pool by setting top_n high.
         # (You may adjust this number based on your collection size.)
         candidate_results = self.hybrid_search.advanced_search(query_text, keywords, top_n=1000, threshold=threshold, search_mode = search_mode, prefixes=prefixes)
-        # print(f"candidate_results: {candidate_results}")
+   
         
         if not candidate_results:
             logger.info("No candidate results found.")
@@ -717,7 +722,7 @@ class RAG_Engine:
             doc_key = doc_id.split('_')[0]  # Extract fileName
             grouped_results.setdefault(doc_key, []).append((doc_id, score))
         
-        # print(f"grouped_results: {grouped_results}")
+      
         
         # For each document group, sort the chunks by score (highest first) and take top per_doc_top_n
         final_results = []

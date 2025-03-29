@@ -2,9 +2,10 @@ import asyncio
 from rank_bm25 import BM25Okapi
 import nltk
 import string
-from typing import List, Set, Optional, Tuple
+from typing import List, Set, Optional, Tuple, Dict
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+import threading
 
 
 def download_nltk_resources():
@@ -36,14 +37,15 @@ class BM25_search:
             download_nltk_resources()
             BM25_search.nltk_resources_downloaded = True
 
-        self.documents: List[str] = []
+        self.doc_dict: Dict[str, Dict[str, any]] = {}  # {doc_id: {'text': ..., 'tokenized': ...}}
         self.doc_ids: List[str] = []
-        self.tokenized_docs: List[List[str]] = []
+   
         self.bm25: Optional[BM25Okapi] = None
         self.remove_stopwords = remove_stopwords
         self.perform_lemmatization = perform_lemmatization
         self.stop_words: Set[str] = set(stopwords.words('english')) if remove_stopwords else set()
         self.lemmatizer = WordNetLemmatizer() if perform_lemmatization else None
+        self.lock = threading.Lock()
 
     def preprocess(self, text: str) -> List[str]:
         """
@@ -77,7 +79,11 @@ class BM25_search:
         - doc_id (str): Unique identifier for the document.
         - new_doc (str): The document text to add.
         """
-        self.add_documents([(doc_id, new_doc)])
+        tokenized = self.preprocess(new_doc)
+        with self.lock:
+            self.doc_dict[doc_id] = {'text': new_doc, 'tokenized': tokenized}
+            self.doc_ids = list(self.doc_dict.keys())
+            self.update_bm25()
 
     def add_documents(self, docs_with_ids: List[Tuple[str, str]]) -> None:
         """
@@ -90,123 +96,66 @@ class BM25_search:
         if not docs_with_ids:
             print("No documents provided.")
             return
-
-        initial_count = len(self.documents)
-        for doc_id, doc in docs_with_ids:
-            if not isinstance(doc, str) or not isinstance(doc_id, str):
-                print(f"Skipping invalid document or ID: {doc_id}")
-                continue
-                
-            self.documents.append(doc)
-            self.doc_ids.append(doc_id)
-            self.tokenized_docs.append(self.preprocess(doc))
-    
-        self.update_bm25()  # Update BM25 index only once
+        with self.lock:
+            for doc_id, doc in docs_with_ids:
+                if not isinstance(doc, str) or not isinstance(doc_id, str):
+                    print(f"Skipping invalid document or ID: {doc_id}")
+                    continue
+                tokenized = self.preprocess(doc)
+                self.doc_dict[doc_id] = {"text": doc, "tokenized": tokenized}
+            self.doc_ids = list(self.doc_dict.keys())
+            self.update_bm25()
        
 
     def remove_document(self, doc_id: str) -> bool:
-        """
-        Removes a document from the corpus based on its ID and updates the BM25 index.
-
-        Parameters:
-        - doc_id (str): The ID of the document to remove.
-
-        Returns:
-        - bool: True if document was removed, False if not found.
-        """
-        try:
-            index = self.doc_ids.index(doc_id)
-            del self.documents[index]
-            del self.doc_ids[index]
-            del self.tokenized_docs[index]
-            self.update_bm25()
-            print(f"Removed document ID: {doc_id}")
-            return True
-        except ValueError:
-            print(f"Document ID {doc_id} not found.")
-            return False
+        with self.lock:
+            if doc_id in self.doc_dict:
+                del self.doc_dict[doc_id]
+                self.doc_ids = list(self.doc_dict.keys())
+                self.update_bm25()
+                print(f"Removed document ID: {doc_id}")
+                return True
+            else:
+                print(f"Document ID {doc_id} not found.")
+                return False
 
     def update_bm25(self) -> None:
-        """
-        Updates the BM25 index based on the current tokenized documents.
-        """
-        if self.tokenized_docs:
-            self.bm25 = BM25Okapi(self.tokenized_docs)
-            # print("BM25 index has been updated.")
+        tokenized_docs = [self.doc_dict[doc_id]["tokenized"] for doc_id in self.doc_ids]
+        if tokenized_docs:
+            self.bm25 = BM25Okapi(tokenized_docs)
         else:
-            print("No documents to initialize BM25.")
+            self.bm25 = None
 
     def get_scores(self, query: str) -> List[float]:
-        """
-        Computes BM25 scores for all documents based on the given query.
-
-        Parameters:
-        - query (str): The search query.
-
-        Returns:
-        - List[float]: List of scores for each document.
-        """
         if not query.strip():
             return []
-            
         processed_query = self.preprocess(query)
         print(f"Tokenized Query: {processed_query}")
-        
-        if self.bm25:
-            return self.bm25.get_scores(processed_query)
-        else:
-            print("BM25 is not initialized.")
-            return []
+        with self.lock:
+            if self.bm25:
+                return self.bm25.get_scores(processed_query)
+            else:
+                print("BM25 is not initialized.")
+                return []
 
     def get_top_n_docs(self, query: str, n: int = 5) -> List[Tuple[str, str, float]]:
-        """
-        Returns the top N documents for a given query with their scores.
-
-        Parameters:
-        - query (str): The search query.
-        - n (int): Number of top documents to return.
-
-        Returns:
-        - List[Tuple[str, str, float]]: List of (doc_id, document, score) tuples.
-        """
-        if not query.strip() or not self.bm25:
+        if not query.strip():
             return []
-
         processed_query = self.preprocess(query)
-        scores = self.bm25.get_scores(processed_query)
-        
-        # Create list of (score, index) tuples and sort by score
-        scored_indices = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-        
-        # Get top N results
-        results = []
-        for idx, score in scored_indices[:n]:
-            results.append((self.doc_ids[idx], self.documents[idx], score))
-        
-        return results
+        with self.lock:
+            if not self.bm25:
+                return []
+            scores = self.bm25.get_scores(processed_query)
+            scored_indices = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+            results = []
+            for idx, score in scored_indices[:n]:
+                doc_id = self.doc_ids[idx]
+                results.append((doc_id, self.doc_dict[doc_id]["text"], score))
+            return results
 
     def clear_documents(self) -> None:
-        """
-        Clears all documents from the BM25 index.
-        """
-        self.documents = []
-        self.doc_ids = []
-        self.tokenized_docs = []
-        self.bm25 = None
-        print("BM25 documents cleared and index reset.")
-
-
-async def initialize_bm25_search(remove_stopwords: bool = True, perform_lemmatization: bool = False) -> BM25_search:
-    """
-    Initializes the BM25_search with proper NLTK resource downloading.
-
-    Parameters:
-    - remove_stopwords (bool): Whether to remove stopwords during preprocessing.
-    - perform_lemmatization (bool): Whether to perform lemmatization on tokens.
-
-    Returns:
-    - BM25_search: Initialized BM25_search instance.
-    """
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, download_nltk_resources)
-    return BM25_search(remove_stopwords, perform_lemmatization)
+        with self.lock:
+            self.doc_dict.clear()
+            self.doc_ids = []
+            self.bm25 = None
+            print("BM25 documents cleared and index reset.")

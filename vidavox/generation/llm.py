@@ -2,6 +2,7 @@ import os
 import requests
 import base64
 from dotenv import load_dotenv
+from vidavox.utils.script_tracker import log_processing_time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -90,7 +91,8 @@ class Completions:
         self.provider = provider
         self.api_key = api_key
         self.default_model = default_model
-
+        
+    @log_processing_time
     def create(self, messages, temperature=0.7, model=None, **kwargs):
         """
         Create a chat completion using the specified or default model.

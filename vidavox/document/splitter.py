@@ -13,6 +13,8 @@ from vidavox.utils.script_tracker import log_processing_time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from vidavox.utils.pretty_logger import pretty_json_log
+
 class DocumentSplitter:
     def __init__(self, config: Optional[ProcessingConfig] = None, show_progress: bool = False, use_recursive:bool = True):
         # Use the provided ProcessingConfig if given; otherwise, use the default.
@@ -38,17 +40,17 @@ class DocumentSplitter:
         doc_iterator = tqdm(documents, desc="Splitting documents") if self.show_progress else documents
 
         for doc in doc_iterator:
-            print(f"metadata: {doc.metadata}")
+            pretty_json_log(logger, f"metadata: {doc.metadata}")
             file_extension = os.path.splitext(doc.metadata["source"])[1]  # e.g., ".pdf"
-            print(file_extension)
+            pretty_json_log(logger, file_extension)
 
             splitter_config = self.splitter_configs.get(file_extension, self.splitter_configs["default"])
-            print(f"splitter_config: {splitter_config}")
+            pretty_json_log(logger, f"splitter_config: {splitter_config}")
             
             try:
                 splitter = splitter_config.splitter_class(**splitter_config.params)
-                print(f"splitter chunk_overlap: {splitter._chunk_overlap}")
-                print(f"splitter chunk_size: {splitter._chunk_size}")
+                # print(f"splitter chunk_overlap: {splitter._chunk_overlap}")
+                # print(f"splitter chunk_size: {splitter._chunk_size}")
                 chunks = splitter.split_text(doc.page_content)
                 
                 for chunk in chunks:
