@@ -98,6 +98,7 @@ class FAISS_search:
             except Exception as e:
                 raise RuntimeError(f"Failed to add documents: {str(e)}")
 
+
     def remove_document(self, doc_id: str) -> bool:
         """
         Removes a document from the FAISS index using O(1) dictionary lookup,
@@ -171,3 +172,42 @@ class FAISS_search:
             self.next_index_id = 0
             self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
         logger.info("FAISS documents cleared and index reset.")
+
+    def get_vector(self, doc_id: str) -> Optional[np.ndarray]:
+        """
+        Encode and return the FAISS vector for a single document in memory.
+        If doc_id not found, returns None.
+        """
+        with self.lock:
+            if doc_id not in self.doc_dict:
+                return None
+            doc_text = self.doc_dict[doc_id]
+        # lock is released, now safely encode
+        try:
+            vector = self.embedding_model.encode([doc_text], convert_to_numpy=True).astype('float32')
+            return vector[0]  # single document vector
+        except Exception as e:
+            logger.error(f"Failed to encode doc {doc_id}: {e}")
+            return None
+
+    def get_multiple_vectors(self, doc_ids: List[str]) -> Dict[str, np.ndarray]:
+        """
+        Return FAISS vectors for multiple documents at once.
+        """
+        texts = []
+        valid_ids = []
+        with self.lock:
+            for d_id in doc_ids:
+                doc_text = self.doc_dict.get(d_id)
+                if doc_text:
+                    valid_ids.append(d_id)
+                    texts.append(doc_text)
+        if not texts:
+            return {}
+        try:
+            matrix = self.embedding_model.encode(texts, convert_to_numpy=True).astype('float32')
+            # matrix is shape (len(valid_ids), dimension)
+            return {d_id: matrix[i] for i, d_id in enumerate(valid_ids)}
+        except Exception as e:
+            logger.error(f"Failed to batch encode documents: {e}")
+            return {}

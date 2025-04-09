@@ -10,6 +10,7 @@ from tqdm import tqdm
 import pandas as pd
 
 from vidavox.utils.pretty_logger import pretty_json_log
+from vidavox.utils.doc_tracker import compute_checksum
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,18 +54,24 @@ class Document:
     meta_data: Dict[str, any]
 
 class DocumentManager:
-    def __init__(self):
+    def __init__(self, vector_store: VectorStorePsql = None):
         self.documents: Dict[str, Document] = {}
+        self.vector_store = vector_store
         self.lock = threading.Lock()  # for thread safety
 
     def add_document(self, doc_id: str, text: str, meta_data: Optional[Dict] = None) -> None:
         with self.lock:
             self.documents[doc_id] = Document(doc_id, text, meta_data or {})
+          
     
     def add_documents(self, docs: List[Tuple[str, str, Dict]]) -> None:
         with self.lock:
             new_docs = {doc_id: Document(doc_id, text, meta_data or {}) for doc_id, text, meta_data in docs}
             self.documents.update(new_docs)
+            if self.vector_store:
+                import asyncio
+                asyncio.create_task(self.vector_store.store_documents_batch(list(new_docs.values())))
+                logger.info(f"Added {len(new_docs)} documents to vector store.")
 
     def get_document(self, doc_id: str) -> Optional[str]:
         with self.lock:
@@ -205,17 +212,48 @@ from typing import List, Optional, Any, Dict, Tuple, Callable, Union
 from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search, SearchMode
 from vidavox.utils.token_counter import TokenCounter
 from vidavox.document import DocumentSplitter, ProcessingConfig, DocumentNodes
+from vidavox.document_store.models import EngineMetadata, Document  # Your ORM models
+from vidavox.document_store.store import VectorStorePsql
+from sqlalchemy.future import select
+import datetime
 
+
+# Helper functions for incremental index update
+async def get_last_index_update(async_session) -> datetime.datetime:
+    async with async_session() as session:
+        result = await session.execute(
+            select(EngineMetadata).filter(EngineMetadata.key == "last_index_update")
+        )
+        meta = result.scalar_one_or_none()
+        if meta:
+            return datetime.datetime.fromisoformat(meta.value.get("timestamp")).replace(tzinfo=datetime.timezone.utc)
+        return datetime.datetime.fromtimestamp(0, tz=datetime.timezone.utc)
+
+async def update_last_index_update(async_session, new_time: datetime.datetime):
+    async with async_session() as session:
+        result = await session.execute(
+            select(EngineMetadata).filter(EngineMetadata.key == "last_index_update")
+        )
+        meta = result.scalar_one_or_none()
+        new_value = {"timestamp": new_time.isoformat()}
+        if meta:
+            meta.value = new_value
+        else:
+            from vidavox.document_store.models import EngineMetadata  # adjust import if needed
+            meta = EngineMetadata(key="last_index_update", value=new_value)
+            session.add(meta)
+        await session.commit()
 
 class RAG_Engine:
     """Main Retrieval Augmented Generation engine with modular components."""
     
-    def __init__(self, embedding_model: str = 'all-MiniLM-L6-v2', use_async: bool = False, show_docs: bool = False):
+    def __init__(self, embedding_model: str = 'all-MiniLM-L6-v2', use_async: bool = False, show_docs: bool = False, vector_store:VectorStorePsql = None):
         """Initialize the RAG engine with all required components."""
         self.use_async = use_async
         self.show_docs = show_docs
         self.token_counter = TokenCounter()
         self.embedding_model = embedding_model
+        self.vector_store = vector_store
         
         # Initialize document store
         self.doc_manager = DocumentManager()
@@ -227,17 +265,21 @@ class RAG_Engine:
         self.bm25_wrapper = BM25_search()
         self.faiss_wrapper = FAISS_search(embedding_model)
         self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
-        
 
-        
         # Results cache
         self.results = []
+    
+    async def initialize_vector_store(self):
+        """Initialize the vector store."""
+        if self.vector_store:
+            await self.vector_store.initialize()
     
     def _process_csv_as_dataframe(
         self, 
         file_path: str, 
         text_col: str,
-        metadata_cols: List[str]
+        metadata_cols: List[str],
+        existing_docs: Dict[str, Document]
     ) -> List[Tuple[str, str, Dict]]:
         """Process a CSV file as a DataFrame."""
         try:
@@ -254,20 +296,26 @@ class RAG_Engine:
             for idx, row in df.iterrows():
                 doc_id = f"{file_name}_{idx}"
                 doc_text = str(row[text_col])
+                doc_checksum = compute_checksum(doc_text)
                 
                 # Create metadata dictionary
                 doc_metadata = {
                     'source': file_path,
                     'file_name': file_name,
                     'row_index': idx,
-                    'file_type': 'csv'
+                    'file_type': 'csv',
+                    'checksum': doc_checksum
                 }
                 
                 # Add specified metadata columns
                 for col in metadata_cols:
                     if col in df.columns:
                         doc_metadata[col] = row[col]
-                    
+                
+                existing_doc = existing_docs.get(doc_id)
+                if existing_doc and existing_doc.meta_data.get("checksum") == doc_checksum:
+                    continue
+
                 batch_docs.append((doc_id, doc_text, doc_metadata))
                 
             logger.info(f"Successfully processed {len(df)} rows from CSV file {file_name}")
@@ -281,7 +329,8 @@ class RAG_Engine:
         self, 
         file_path: str, 
         text_col: str,
-        metadata_cols: List[str]
+        metadata_cols: List[str],
+        existing_docs: Dict[str, Document]
     ) -> List[Tuple[str, str, Dict]]:
         """Process an Excel file as a DataFrame."""
         try:
@@ -298,13 +347,15 @@ class RAG_Engine:
             for idx, row in df.iterrows():
                 doc_id = f"{file_name}_{idx}"
                 doc_text = str(row[text_col])
+                doc_checksum = compute_checksum(doc_text)
 
                 # Create metadata dictionary
                 doc_metadata = {
                     'source': file_path,
                     'file_name': file_name,
                     'row_index': idx,
-                    'file_type': 'excel'
+                    'file_type': 'excel',
+                    'checksum': doc_checksum,
                 }
 
                 # Add specified metadata columns
@@ -312,6 +363,10 @@ class RAG_Engine:
                     if col in df.columns:
                         doc_metadata[col] = row[col]
 
+                # Skip if the document exists and checksum is unchanged.
+                existing_doc = existing_docs.get(doc_id)
+                if existing_doc and existing_doc.meta_data.get("checksum") == doc_checksum:
+                    continue
                 batch_docs.append((doc_id, doc_text, doc_metadata))
 
             logger.info(f"Successfully processed {len(df)} rows from Excel file {file_name}")
@@ -392,6 +447,8 @@ class RAG_Engine:
         batch_docs = []
         BATCH_SIZE = 100
 
+        # Use existing documents to perform incremental indexing
+        existing_docs = self.doc_manager.documents
         # Configure progress tracking
         iterator = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
         
@@ -414,7 +471,8 @@ class RAG_Engine:
                     file_docs = self._process_csv_as_dataframe(
                         file_path, 
                         text_col=text_col,
-                        metadata_cols=metadata_cols
+                        metadata_cols=metadata_cols,
+                        existing_docs = existing_docs
                     )
                     # print(f"file_docs: {file_docs}")
                     if file_docs:
@@ -425,7 +483,8 @@ class RAG_Engine:
                     file_docs = self._process_excel_as_dataframe(
                         file_path,
                         text_col=text_col,
-                        metadata_cols=metadata_cols
+                        metadata_cols=metadata_cols,
+                        existing_docs = existing_docs
                     )
                     if file_docs:
                         stats['excel_files_processed'] += 1

@@ -159,3 +159,34 @@ class BM25_search:
             self.doc_ids = []
             self.bm25 = None
             print("BM25 documents cleared and index reset.")
+            
+    def get_doc_terms(self, doc_id: str) -> Dict[str, int]:
+        """
+        Return the token frequency dictionary for a single document.
+        If the doc_id doesn't exist, return {}.
+        """
+        with self.lock:
+            doc_info = self.doc_dict.get(doc_id)
+            if not doc_info:
+                return {}
+            tokens = doc_info['tokenized']
+            freq_dict = {}
+            for t in tokens:
+                freq_dict[t] = freq_dict.get(t, 0) + 1
+            return freq_dict
+
+    def get_multiple_doc_terms(self, doc_ids: List[str]) -> Dict[str, Dict[str, int]]:
+        """
+        Return token frequency dictionary for multiple documents.
+        {doc_id: {term: freq}}
+        """
+        with self.lock:
+            results = {}
+            for d_id in doc_ids:
+                if d_id in self.doc_dict:
+                    tokens = self.doc_dict[d_id]['tokenized']
+                    freq_dict = {}
+                    for t in tokens:
+                        freq_dict[t] = freq_dict.get(t, 0) + 1
+                    results[d_id] = freq_dict
+            return results

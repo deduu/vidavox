@@ -3,13 +3,17 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# load_dotenv()
+
+env_file_path = os.path.join(os.getcwd(), ".env")  
+load_dotenv(env_file_path)
+
 from dataclasses import dataclass
 from typing import Optional
 
 @dataclass
 class DatabaseSettings:
-    url: str
+    url: Optional[str] = "postgresql+asyncpg://postgres:admin@localhost:5432/coretax_wa"
     pool_size: int = 5
     max_overflow: int = 10
     pool_timeout: int = 30
@@ -27,3 +31,7 @@ class Settings:
     # Add other settings as needed
 
 settings = Settings()
+
+
+
+

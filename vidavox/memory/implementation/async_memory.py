@@ -15,6 +15,7 @@ class AsyncPostgresConversationMemory(ConversationMemoryInterface):
     def __init__(self, db_settings: DatabaseSettings, memory_settings: MemorySettings):
         self.engine = create_async_engine(
             db_settings.url,
+            # echo=True, 
             pool_size=db_settings.pool_size,
             max_overflow=db_settings.max_overflow,
             pool_timeout=db_settings.pool_timeout
@@ -127,3 +128,43 @@ class AsyncPostgresConversationMemory(ConversationMemoryInterface):
             await session.delete(oldest)
         
         await session.commit()
+    
+    async def debug_database(self):
+        print("== DEBUG: Checking Database Connection and Data ==")
+        print("DB URL in use:", self.engine.url)
+
+        async with self.async_session() as session:
+            # 1) Check the table names in the database (optional, if your role allows):
+            #    This queries PostgreSQL's catalog for tables in the `public` schema
+            try:
+                result = await session.execute("""
+                    SELECT tablename 
+                    FROM pg_catalog.pg_tables 
+                    WHERE schemaname = 'public'
+                """)
+                tables = [row[0] for row in result.fetchall()]
+                print("Tables in the public schema:", tables)
+            except Exception as e:
+                print("Could not fetch table names:", e)
+
+            # 2) Check users table data
+            try:
+                result = await session.execute("SELECT id, phone_number FROM users;")
+                users = result.fetchall()
+                print(f"Users table has {len(users)} row(s). Example rows:")
+                for row in users[:5]:  # print up to first 5
+                    print("  ", row)
+            except Exception as e:
+                print("Could not fetch from users table:", e)
+
+            # 3) Check messages table data
+            try:
+                result = await session.execute("SELECT id, user_id, role, message FROM messages;")
+                messages = result.fetchall()
+                print(f"Messages table has {len(messages)} row(s). Example rows:")
+                for row in messages[:5]:  # print up to first 5
+                    print("  ", row)
+            except Exception as e:
+                print("Could not fetch from messages table:", e)
+
+        print("== END DEBUG ==")
