@@ -1,4 +1,5 @@
 import threading
+import asyncio
 from typing import List, Tuple, Optional, Any, Union, Dict
 from sentence_transformers import SentenceTransformer
 import logging
@@ -47,6 +48,18 @@ class FAISS_search:
             return embedding_model
         except Exception as e:
             raise RuntimeError(f"Model initialization failed: {str(e)}")
+            
+    async def async_initialize_embedding_model(
+        self, 
+        embedding_model: Optional[Union[str, SentenceTransformer]] = None
+    ) -> SentenceTransformer:
+        """
+        Asynchronously initialize the embedding model.
+        """
+        return await asyncio.to_thread(
+            self._initialize_embedding_model, 
+            embedding_model
+        )
 
     def get_embedding_dimension(self) -> int:
         if self.embedding_model is None:
@@ -54,12 +67,33 @@ class FAISS_search:
         else:
             # Encode a dummy text to determine embedding dimension
             return len(self.embedding_model.encode("embedding"))
+            
+    async def async_get_embedding_dimension(self) -> int:
+        """
+        Asynchronously get the embedding dimension.
+        """
+        if self.embedding_model is None:
+            return 0
+        else:
+            # Use to_thread to run the encoding in a separate thread
+            dummy_embedding = await asyncio.to_thread(
+                self.embedding_model.encode,
+                "embedding",
+                convert_to_numpy=True
+            )
+            return len(dummy_embedding)
 
     def add_document(self, doc_id: str, doc: str) -> None:
         """
         Adds a single document to the FAISS index.
         """
         self.add_documents([(doc_id, doc)])
+        
+    async def async_add_document(self, doc_id: str, doc: str) -> None:
+        """
+        Asynchronously adds a single document to the FAISS index.
+        """
+        await self.async_add_documents([(doc_id, doc)])
 
     def add_documents(self, docs_with_ids: List[Tuple[str, str]]) -> None:
         """
@@ -97,7 +131,56 @@ class FAISS_search:
                     self.index.add_with_ids(embeddings, np.array(new_ids).astype('int64'))
             except Exception as e:
                 raise RuntimeError(f"Failed to add documents: {str(e)}")
-
+                
+    async def async_add_documents(self, docs_with_ids: List[Tuple[str, str]]) -> None:
+        """
+        Asynchronously adds multiple documents to the FAISS index and updates internal structures.
+        """
+        if not docs_with_ids:
+            return
+        
+        new_texts = []
+        new_ids = []
+        with self.lock:
+            for doc_id, doc in docs_with_ids:
+                if not isinstance(doc, str) or not isinstance(doc_id, str):
+                    logger.warning(f"Skipping invalid document or ID: {doc_id}")
+                    continue
+                # If the document already exists, you might decide to update or skip.
+                if doc_id in self.doc_dict:
+                    logger.info(f"Document ID {doc_id} already exists; skipping addition.")
+                    continue
+                # Store the document text for O(1) lookup
+                self.doc_dict[doc_id] = doc
+                # Assign a new integer ID for FAISS
+                current_index = self.next_index_id
+                self.id_map[doc_id] = current_index
+                new_ids.append(current_index)
+                new_texts.append(doc)
+                self.next_index_id += 1
+        
+        if new_texts:
+            try:
+                # Asynchronously generate embeddings
+                embeddings = await asyncio.to_thread(
+                    self.embedding_model.encode,
+                    new_texts,
+                    convert_to_numpy=True
+                )
+                embeddings = embeddings.astype('float32')
+                
+                if embeddings.shape[0] == 0:
+                    raise ValueError("Empty embeddings generated")
+                    
+                # Add to index
+                with self.lock:
+                    await asyncio.to_thread(
+                        self.index.add_with_ids,
+                        embeddings,
+                        np.array(new_ids).astype('int64')
+                    )
+            except Exception as e:
+                raise RuntimeError(f"Failed to add documents asynchronously: {str(e)}")
 
     def remove_document(self, doc_id: str) -> bool:
         """
@@ -113,6 +196,23 @@ class FAISS_search:
             del self.id_map[doc_id]
         # Rebuild the index since individual deletion is nontrivial
         self._rebuild_index()
+        logger.info(f"Removed document ID: {doc_id}")
+        return True
+        
+    async def async_remove_document(self, doc_id: str) -> bool:
+        """
+        Asynchronously removes a document from the FAISS index and rebuilds the index.
+        """
+        with self.lock:
+            if doc_id not in self.doc_dict:
+                logger.warning(f"Document ID {doc_id} not found.")
+                return False
+            # Remove document from dictionaries
+            del self.doc_dict[doc_id]
+            del self.id_map[doc_id]
+        
+        # Asynchronously rebuild the index
+        await self._async_rebuild_index()
         logger.info(f"Removed document ID: {doc_id}")
         return True
 
@@ -138,6 +238,42 @@ class FAISS_search:
             # Reinitialize and rebuild the FAISS index
             self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
             self.index.add_with_ids(embeddings, np.array(new_ids).astype('int64'))
+            
+    async def _async_rebuild_index(self) -> None:
+        """
+        Asynchronously rebuilds the FAISS index from the current documents.
+        """
+        with self.lock:
+            all_doc_ids = list(self.doc_dict.keys())
+            all_texts = [self.doc_dict[d] for d in all_doc_ids]
+            # Reassign integer IDs continuously
+            self.id_map = {}
+            new_ids = []
+            self.next_index_id = 0
+            for doc_id in all_doc_ids:
+                self.id_map[doc_id] = self.next_index_id
+                new_ids.append(self.next_index_id)
+                self.next_index_id += 1
+        
+        try:
+            # Asynchronously generate embeddings
+            embeddings = await asyncio.to_thread(
+                self.embedding_model.encode,
+                all_texts,
+                convert_to_numpy=True
+            )
+            embeddings = embeddings.astype('float32')
+            
+            # Create new index and add embeddings
+            with self.lock:
+                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+                await asyncio.to_thread(
+                    self.index.add_with_ids,
+                    embeddings,
+                    np.array(new_ids).astype('int64')
+                )
+        except Exception as e:
+            raise RuntimeError(f"Failed to rebuild embeddings asynchronously: {str(e)}")
 
     def search(self, query: str, k: int) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -155,6 +291,35 @@ class FAISS_search:
         distances, indices = self.index.search(query_embedding, k)
         return distances[0], indices[0]
     
+    async def async_search(self, query: str, k: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Asynchronously searches the FAISS index for the top-k documents matching the query.
+        Returns a tuple of (distances, indices).
+        """
+        with self.lock:
+            if self.index.ntotal == 0:
+                logger.info("FAISS index is empty. No results can be returned.")
+                return np.array([]), np.array([])
+        
+        try:
+            # Asynchronously encode the query
+            query_embedding = await asyncio.to_thread(
+                self.embedding_model.encode,
+                [query],
+                convert_to_numpy=True
+            )
+            query_embedding = query_embedding.astype('float32')
+            
+            # Asynchronously search the index
+            distances, indices = await asyncio.to_thread(
+                self.index.search,
+                query_embedding,
+                k
+            )
+            return distances[0], indices[0]
+        except Exception as e:
+            raise RuntimeError(f"Failed to encode query asynchronously: {str(e)}")
+    
     def get_document(self, doc_id: str) -> str:
         """
         Retrieves a document by its document ID in O(1) time.
@@ -162,9 +327,89 @@ class FAISS_search:
         with self.lock:
             return self.doc_dict.get(doc_id, "")
     
+    async def async_get_document(self, doc_id: str) -> str:
+        """
+        Asynchronously retrieves a document by its document ID.
+        """
+        # This is already O(1), but we add the async method for API consistency
+        with self.lock:
+            return self.doc_dict.get(doc_id, "")
+    
+    def restore_index_from_vectors(self, vectors_map: Dict[str, np.ndarray]) -> None:
+        """
+        Rebuild the FAISS index from precomputed vectors instead of re-encoding texts.
+        'vectors_map' is a dictionary mapping doc_id to numpy array vector.
+        """
+        with self.lock:
+            # Reset id_map and next_index_id.
+            self.id_map = {}
+            new_ids = []
+            new_vectors = []
+            # Use the ordering from the vectors_map.
+            for doc_id, vector in vectors_map.items():
+                # Store the document in the id_map with a new integer id.
+                self.id_map[doc_id] = self.next_index_id
+                new_ids.append(self.next_index_id)
+                new_vectors.append(vector)
+                self.next_index_id += 1
+            # Convert list of vectors into a single numpy array.
+            if new_vectors:
+                new_vectors_np = np.array(new_vectors, dtype='float32')
+                # Reinitialize the FAISS index.
+                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+                self.index.add_with_ids(new_vectors_np, np.array(new_ids, dtype='int64'))
+                logger.info(f"Rebuilt FAISS index from {len(new_ids)} stored vectors.")
+            else:
+                logger.warning("No vectors provided to restore the FAISS index.")
+
+    async def async_restore_index_from_vectors(self, vectors_map: Dict[str, np.ndarray]) -> None:
+        """
+        Asynchronously rebuild the FAISS index from precomputed vectors
+        without blocking the event loop for potentially CPU-bound operations.
+        """
+        async with self.lock:
+            # Reset id_map and next_index_id.
+            self.id_map = {}
+            new_ids = []
+            new_vectors = []
+
+            for doc_id, vector in vectors_map.items():
+                self.id_map[doc_id] = self.next_index_id
+                new_ids.append(self.next_index_id)
+                new_vectors.append(vector)
+                self.next_index_id += 1
+
+        # Offload CPU-bound tasks outside the lock if possible.
+        if new_vectors:
+            # Offload the creation of the numpy array to a thread.
+            new_vectors_np = await asyncio.to_thread(np.array, new_vectors, dtype='float32')
+            # Reinitialize the FAISS index in a thread, as adding vectors might be CPU intensive.
+            async with self.lock:
+                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+                # Offload the index addition to a thread.
+                await asyncio.to_thread(
+                    self.index.add_with_ids,
+                    new_vectors_np,
+                    np.array(new_ids, dtype='int64')
+                )
+                logger.info(f"Rebuilt FAISS index from {len(new_ids)} stored vectors.")
+        else:
+            logger.warning("No vectors provided to restore the FAISS index.")    
+
     def clear_documents(self) -> None:
         """
         Clears all documents from the FAISS index.
+        """
+        with self.lock:
+            self.doc_dict.clear()
+            self.id_map.clear()
+            self.next_index_id = 0
+            self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+        logger.info("FAISS documents cleared and index reset.")
+        
+    async def async_clear_documents(self) -> None:
+        """
+        Asynchronously clears all documents from the FAISS index.
         """
         with self.lock:
             self.doc_dict.clear()
@@ -189,6 +434,27 @@ class FAISS_search:
         except Exception as e:
             logger.error(f"Failed to encode doc {doc_id}: {e}")
             return None
+            
+    async def async_get_vector(self, doc_id: str) -> Optional[np.ndarray]:
+        """
+        Asynchronously encode and return the FAISS vector for a single document.
+        """
+        with self.lock:
+            if doc_id not in self.doc_dict:
+                return None
+            doc_text = self.doc_dict[doc_id]
+        
+        # lock is released, now safely encode asynchronously
+        try:
+            vector = await asyncio.to_thread(
+                self.embedding_model.encode,
+                [doc_text],
+                convert_to_numpy=True
+            )
+            return vector[0].astype('float32')  # single document vector
+        except Exception as e:
+            logger.error(f"Failed to encode doc {doc_id} asynchronously: {e}")
+            return None
 
     def get_multiple_vectors(self, doc_ids: List[str]) -> Dict[str, np.ndarray]:
         """
@@ -211,3 +477,80 @@ class FAISS_search:
         except Exception as e:
             logger.error(f"Failed to batch encode documents: {e}")
             return {}
+            
+    async def async_get_multiple_vectors(self, doc_ids: List[str]) -> Dict[str, np.ndarray]:
+        """
+        Asynchronously return FAISS vectors for multiple documents at once.
+        """
+        texts = []
+        valid_ids = []
+        with self.lock:
+            for d_id in doc_ids:
+                doc_text = self.doc_dict.get(d_id)
+                if doc_text:
+                    valid_ids.append(d_id)
+                    texts.append(doc_text)
+        if not texts:
+            return {}
+        
+        try:
+            # Asynchronously encode all texts
+            matrix = await asyncio.to_thread(
+                self.embedding_model.encode,
+                texts,
+                convert_to_numpy=True
+            )
+            matrix = matrix.astype('float32')
+            
+            # Create dictionary mapping document IDs to vectors
+            return {d_id: matrix[i] for i, d_id in enumerate(valid_ids)}
+        except Exception as e:
+            logger.error(f"Failed to batch encode documents asynchronously: {e}")
+            return {}
+            
+    # Additional async methods for bulk operations
+    
+    async def async_search_batch(self, queries: List[str], k: int) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Asynchronously search multiple queries at once.
+        Returns a list of (distances, indices) tuples.
+        """
+        with self.lock:
+            if self.index.ntotal == 0:
+                logger.info("FAISS index is empty. No results can be returned.")
+                return [(np.array([]), np.array([]))] * len(queries)
+        
+        try:
+            # Encode all queries at once asynchronously
+            query_embeddings = await asyncio.to_thread(
+                self.embedding_model.encode,
+                queries,
+                convert_to_numpy=True
+            )
+            query_embeddings = query_embeddings.astype('float32')
+            
+            # Search each query
+            results = []
+            for i in range(len(queries)):
+                single_query = query_embeddings[i:i+1]  # Keep as 2D array
+                distances, indices = await asyncio.to_thread(
+                    self.index.search,
+                    single_query,
+                    k
+                )
+                results.append((distances[0], indices[0]))
+            return results
+        except Exception as e:
+            raise RuntimeError(f"Failed to batch search queries asynchronously: {str(e)}")
+            
+    @staticmethod
+    async def create_async(embedding_model: Optional[Any] = None) -> 'FAISS_search':
+        """
+        Static factory method to create and initialize a FAISS_search instance asynchronously.
+        """
+        searcher = FAISS_search(None)  # Create with no model first
+        searcher.embedding_model = await searcher.async_initialize_embedding_model(embedding_model)
+        searcher.dimension = await searcher.async_get_embedding_dimension()
+        searcher.index = faiss.IndexIDMap(faiss.IndexFlatL2(searcher.dimension))
+        return searcher
+

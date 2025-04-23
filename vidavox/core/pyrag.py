@@ -68,10 +68,7 @@ class DocumentManager:
         with self.lock:
             new_docs = {doc_id: Document(doc_id, text, meta_data or {}) for doc_id, text, meta_data in docs}
             self.documents.update(new_docs)
-            if self.vector_store:
-                import asyncio
-                asyncio.create_task(self.vector_store.store_documents_batch(list(new_docs.values())))
-                logger.info(f"Added {len(new_docs)} documents to vector store.")
+            
 
     def get_document(self, doc_id: str) -> Optional[str]:
         with self.lock:
@@ -595,6 +592,12 @@ class RAG_Engine:
             self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
             self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)))
             
+            if self.vector_store:
+                bm25_terms_map = self.bm25_wrapper.get_multiple_doc_terms(doc_ids)
+
+                for doc_id in bm25_terms_map.keys():
+                    terms_dict = bm25_terms_map[doc_id]
+                    await self.vector_store.store_bm25_terms(doc_id, terms_dict)
         except Exception as e:
             logger.error(f"Failed to process document batch: {e}")
             raise
