@@ -35,21 +35,16 @@ class Hybrid_search:
         keywords: Optional[List[str]] = None,
         top_n: int = 5,
         threshold: float = 0.53,
-        prefixes: Optional[List[str]] = None
-    ) -> List[Tuple[str, float]]:
+        prefixes: Optional[List[str]] = None,
+        include_doc_ids: Optional[List[str]] = None,   #  ← NEW
+        exclude_doc_ids: Optional[List[str]] = None    #  ← NEW
+        ) -> List[Tuple[str, float]]:
         # Adjust BM25 weighting based on query length.
-        self._dynamic_weighting(len(query.split()))
-        keywords_str = " ".join(keywords) if keywords else ""
-        
-        # Get BM25 results: scores and document IDs.
-        bm25_scores, bm25_doc_ids = await self._get_bm25_results_async(keywords_str, top_n=top_n)
-        
-        # Get FAISS results: distances, indices, and document IDs.
-        try:
-            faiss_distances, faiss_indices, faiss_doc_ids = await self._get_faiss_results_async(query, top_n=top_n)
-        except Exception as e:
-            self.logger.error(f"FAISS search failed: {str(e)}")
-            return []
+        await self._dynamic_weighting_async(len(query.split()))
+        kw_str = " ".join(keywords) if keywords else ""
+
+        bm25_scores, bm25_doc_ids = self._get_bm25_results_async(kw_str, top_n, prefixes, include_doc_ids, exclude_doc_ids)
+        faiss_distances, faiss_doc_ids = self._get_faiss_results_async(query, top_n, prefixes, include_doc_ids, exclude_doc_ids)
         
         # Map document IDs to scores.
         bm25_scores_dict, faiss_scores_dict = await self._map_scores_to_doc_ids_async(
@@ -78,22 +73,25 @@ class Hybrid_search:
         return results
 
     def advanced_search(
-        self,
-        query: str,
-        keywords: Optional[List[str]] = None,
-        top_n: Optional[int] = 5,
-        threshold: Optional[float] = 0.53,
-        prefixes: Optional[List[str]] = None,
-        search_mode: Optional[SearchMode] = SearchMode.HYBRID
+            self,
+            query: str,
+            keywords: Optional[List[str]] = None,
+            top_n: int = 5,
+            threshold: float = 0.53,
+            prefixes: Optional[List[str]] = None,
+            include_doc_ids: Optional[List[str]] = None,   #  ← NEW
+            exclude_doc_ids: Optional[List[str]] = None,   #  ← NEW
+            search_mode: Optional[SearchMode] = None
     ) -> List[Tuple[str, float]]:
+        
         if search_mode:
             self.search_mode = search_mode
             
         self._dynamic_weighting(len(query.split()))
         keywords_str = " ".join(keywords) if keywords else ""
-        
-        bm25_scores, bm25_doc_ids = self._get_bm25_results(keywords_str, top_n=top_n)
-        faiss_distances, faiss_indices, faiss_doc_ids = self._get_faiss_results(query, top_n=top_n)
+
+        bm25_scores, bm25_doc_ids = self._get_bm25_results(keywords_str, top_n, prefixes, include_doc_ids, exclude_doc_ids)
+        faiss_distances, faiss_doc_ids = self._get_faiss_results(query, top_n, prefixes, include_doc_ids, exclude_doc_ids)
         
         bm25_scores_dict, faiss_scores_dict = self._map_scores_to_doc_ids(
             bm25_doc_ids, bm25_scores, faiss_doc_ids, faiss_distances
@@ -122,79 +120,111 @@ class Hybrid_search:
         self.bm25_weight = 0.7 if query_length <= 5 else 0.5
         self.logger.info(f"Dynamic BM25 weight set to: {self.bm25_weight}")
 
-    def _get_bm25_results(self, keywords: str, top_n: int = None) -> Tuple[np.ndarray, np.ndarray]:
-        # Retrieve BM25 scores using the BM25_search instance.
-        bm25_scores = np.array(self.bm25_search.get_scores(keywords))
-        # Use the BM25_search internal list of doc_ids.
-        bm25_doc_ids = np.array(self.bm25_search.doc_ids)
-        if top_n is not None and len(bm25_scores) > 0:
-            top_k_indices = np.argsort(bm25_scores)[-top_n:][::-1]
-            return bm25_scores[top_k_indices], bm25_doc_ids[top_k_indices]
-        return bm25_scores, bm25_doc_ids
 
-    async def _get_bm25_results_async(self, keywords: str, top_n: int = None) -> Tuple[np.ndarray, np.ndarray]:
-        # Use loop.run_in_executor for potentially blocking operations
-        loop = asyncio.get_event_loop()
-        bm25_scores = np.array(await loop.run_in_executor(None, self.bm25_search.get_scores, keywords))
-        bm25_doc_ids = np.array(self.bm25_search.doc_ids)
-        if top_n is not None and len(bm25_scores) > 0:
-            top_k_indices = np.argsort(bm25_scores)[-top_n:][::-1]
-            return bm25_scores[top_k_indices], bm25_doc_ids[top_k_indices]
-        return bm25_scores, bm25_doc_ids
+    
+    def _get_bm25_results(self,
+                      keywords: str,
+                      top_n: int,
+                      prefixes=None,
+                      include_ids=None,
+                      exclude_ids=None) -> Tuple[np.ndarray, np.ndarray]:
 
-    def _get_faiss_results(self, query: str, top_n: int = None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        try:
-            # If top_n not provided, use the total number of FAISS documents.
-            if top_n is None:
-                top_n = len(list(self.faiss_search.doc_dict.keys()))
-            distances, indices = self.faiss_search.search(query, k=top_n)
-            if len(distances) == 0 or len(indices) == 0:
-                self.logger.info("FAISS search returned no results.")
-                return np.array([]), np.array([]), []
-            
-            # Filter out invalid indices (-1).
-            valid_mask = indices != -1
-            filtered_distances = distances[valid_mask]
-            filtered_indices = indices[valid_mask]
-            self.logger.info(f"FAISS returned indices: {filtered_indices}")
-            
-            # Build a reverse mapping from integer ID to doc_id.
-            rev_id_map = {v: k for k, v in self.faiss_search.id_map.items()}
-            doc_ids = [rev_id_map.get(idx, "") for idx in filtered_indices if idx in rev_id_map]
-            return filtered_distances, filtered_indices, doc_ids
-        except Exception as e:
-            self.logger.error(f"Error in FAISS search: {str(e)}")
-            raise
-
-    async def _get_faiss_results_async(self, query: str, top_n: int = None) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        try:
-            # If top_n not provided, use the total number of FAISS documents.
-            if top_n is None:
-                top_n = len(list(self.faiss_search.doc_dict.keys()))
-            
-            # Use loop.run_in_executor for potentially blocking operations
-            loop = asyncio.get_event_loop()
-            distances, indices = await loop.run_in_executor(
-                None, self.faiss_search.search, query, top_n
+        # Use the engine’s native, highly-optimised filtering
+        if prefixes or include_ids or exclude_ids:
+            raw = self.bm25_search.get_top_n_docs(
+                keywords,
+                n = top_n or len(self.bm25_search.doc_ids),
+                include_doc_ids  = include_ids,
+                exclude_doc_ids  = exclude_ids,
+                include_prefixes = prefixes,
+                exclude_prefixes = None          # you can expose this later
             )
-            
-            if len(distances) == 0 or len(indices) == 0:
-                self.logger.info("FAISS search returned no results.")
-                return np.array([]), np.array([]), []
-            
-            # Filter out invalid indices (-1).
-            valid_mask = indices != -1
-            filtered_distances = distances[valid_mask]
-            filtered_indices = indices[valid_mask]
-            self.logger.info(f"FAISS returned indices: {filtered_indices}")
-            
-            # Build a reverse mapping from integer ID to doc_id.
-            rev_id_map = {v: k for k, v in self.faiss_search.id_map.items()}
-            doc_ids = [rev_id_map.get(idx, "") for idx in filtered_indices if idx in rev_id_map]
-            return filtered_distances, filtered_indices, doc_ids
-        except Exception as e:
-            self.logger.error(f"Error in FAISS search: {str(e)}")
-            raise
+            if not raw:
+                return np.empty(0), np.empty(0, dtype=str)
+            ids, scores = zip(*[(d, s) for d, _, s in raw])
+            return np.asarray(scores), np.asarray(ids)
+
+    async def _get_bm25_results_async(self,
+                                  keywords     : str,
+                                  top_n        : int,
+                                  prefixes     = None,
+                                  include_ids  = None,
+                                  exclude_ids  = None) -> Tuple[np.ndarray, np.ndarray]:
+
+        loop = asyncio.get_running_loop()
+
+        if prefixes or include_ids or exclude_ids:
+            raw = await loop.run_in_executor(
+                None,
+                self.bm25_search.get_top_n_docs,
+                keywords,
+                top_n or len(self.bm25_search.doc_ids),
+                include_ids,
+                exclude_ids,
+                prefixes,
+                None                       # exclude_prefixes (not exposed yet)
+            )
+            if not raw:
+                return np.empty(0), np.empty(0, dtype=str)
+            ids, scores = zip(*[(d, s) for d, _, s in raw])
+            return np.asarray(scores), np.asarray(ids)
+
+        # fast path when no filter is required
+        scores = np.array(await loop.run_in_executor(None, self.bm25_search.get_scores, keywords))
+        ids    = np.array(self.bm25_search.doc_ids)
+        if scores.size and top_n:
+            idx = scores.argsort()[-top_n:][::-1]
+            return scores[idx], ids[idx]
+        return scores, ids
+
+    
+    def _build_faiss_filter(self, prefixes, include_ids, exclude_ids):
+        if not any([prefixes, include_ids, exclude_ids]):
+            return None
+
+        allowed = set(self.faiss_search.doc_dict.keys())
+        if prefixes:
+            allowed &= {d for d in allowed if any(d.startswith(p) for p in prefixes)}
+        if include_ids:
+            allowed &= set(include_ids)
+        if exclude_ids:
+            allowed -= set(exclude_ids)
+
+        return self.faiss_search.create_include_filter(list(allowed))
+
+
+    def _get_faiss_results(self,
+                       query: str,
+                       top_n: int,
+                       prefixes=None,
+                       include_ids=None,
+                       exclude_ids=None) -> Tuple[np.ndarray, List[str]]:
+
+        id_filter = self._build_faiss_filter(prefixes, include_ids, exclude_ids)
+        top_k     = top_n or len(self.faiss_search.doc_dict)
+        dists, ids = self.faiss_search.search(query, k=top_k, id_filter=id_filter)
+        return np.asarray(dists), ids
+
+    async def _get_faiss_results_async(self,
+                                   query        : str,
+                                   top_n        : int,
+                                   prefixes     = None,
+                                   include_ids  = None,
+                                   exclude_ids  = None) -> Tuple[np.ndarray, List[str]]:
+
+        id_filter = self._build_faiss_filter(prefixes, include_ids, exclude_ids)
+        k         = top_n or len(self.faiss_search.doc_dict)
+        loop      = asyncio.get_running_loop()
+
+        distances, ids = await loop.run_in_executor(
+            None,
+            self.faiss_search.search,
+            query,
+            k,
+            id_filter
+        )
+        return np.asarray(distances), ids
+
 
     def _map_scores_to_doc_ids(
         self,

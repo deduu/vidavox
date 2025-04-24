@@ -48,25 +48,25 @@ class DefaultResultFormatter(BaseResultFormatter):
         }
 
 @dataclass
-class Document:
+class Doc:
     doc_id: str
     text: str
     meta_data: Dict[str, any]
 
 class DocumentManager:
-    def __init__(self, vector_store: VectorStorePsql = None):
-        self.documents: Dict[str, Document] = {}
-        self.vector_store = vector_store
+    def __init__(self):
+        self.documents: Dict[str, Doc] = {}
+        # self.vector_store = vector_store
         self.lock = threading.Lock()  # for thread safety
 
     def add_document(self, doc_id: str, text: str, meta_data: Optional[Dict] = None) -> None:
         with self.lock:
-            self.documents[doc_id] = Document(doc_id, text, meta_data or {})
+            self.documents[doc_id] = Doc(doc_id, text, meta_data or {})
           
     
     def add_documents(self, docs: List[Tuple[str, str, Dict]]) -> None:
         with self.lock:
-            new_docs = {doc_id: Document(doc_id, text, meta_data or {}) for doc_id, text, meta_data in docs}
+            new_docs = {doc_id: Doc(doc_id, text, meta_data or {}) for doc_id, text, meta_data in docs}
             self.documents.update(new_docs)
             
 
@@ -116,6 +116,12 @@ class DocumentManager:
     def clear(self) -> None:
         with self.lock:
             self.documents.clear()
+
+    @property
+    def doc_ids(self) -> List[str]:
+        """Return a **deterministically sorted** list of document IDs."""
+        with self.lock:
+            return sorted(self.documents.keys())
 
 
 class FileProcessor:
@@ -207,6 +213,7 @@ import asyncio
 from typing import List, Optional, Any, Dict, Tuple, Callable, Union
 
 from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search, SearchMode
+
 from vidavox.utils.token_counter import TokenCounter
 from vidavox.document import DocumentSplitter, ProcessingConfig, DocumentNodes
 from vidavox.document_store.models import EngineMetadata, Document  # Your ORM models
@@ -389,7 +396,8 @@ class RAG_Engine:
             # Process each chunk
             for idx, doc in enumerate(nodes):
                 timestamp = int(time.time())
-                doc_id = f"{file_name}_{timestamp}_chunk_{idx}"
+                # doc_id = f"{file_name}_{timestamp}_chunk_{idx}"
+                doc_id = f"{file_name}_chunk{idx}"
                 
                 # Get and merge metadata
                 file_meta = processor.get_file_metadata(Path(file_path))
@@ -594,10 +602,12 @@ class RAG_Engine:
             
             if self.vector_store:
                 bm25_terms_map = self.bm25_wrapper.get_multiple_doc_terms(doc_ids)
+                for doc_id, terms in bm25_terms_map.items():
+                    # runs in a thread so we don't block
+                    asyncio.get_running_loop().run_in_executor(
+                        None, self.vector_store.store_bm25_terms, doc_id, terms
+                    )
 
-                for doc_id in bm25_terms_map.keys():
-                    terms_dict = bm25_terms_map[doc_id]
-                    await self.vector_store.store_bm25_terms(doc_id, terms_dict)
         except Exception as e:
             logger.error(f"Failed to process document batch: {e}")
             raise
@@ -649,24 +659,28 @@ class RAG_Engine:
             logger.error(f"Error deleting document {doc_id}: {e}")
             return False
     
-    def query(self, query_text: str, keywords: Optional[List[str]] = None, 
-             threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None, prefixes=None) -> List[Dict]:
+    def query(self, query_text: str, keywords: Optional[List[str]] = None,
+         threshold: float = 0.4, top_k: int = 5,
+         result_formatter: Optional[BaseResultFormatter] = None,
+         prefixes: Optional[List[str]] = None,
+         include_doc_ids: Optional[List[str]] = None,
+         exclude_doc_ids: Optional[List[str]] = None) -> List[Dict]:
         """Query the engine for relevant documents."""
         if self.use_async:
-            return asyncio.run(self.retrieve_async(query_text, keywords, threshold, top_k, result_formatter=result_formatter, prefixes=prefixes))
+            return asyncio.run(self.retrieve_async(query_text, keywords, threshold, top_k, result_formatter=result_formatter, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids))
         else:
-            return self.retrieve(query_text, keywords, threshold, top_k, result_formatter=result_formatter, prefixes=prefixes)
+            return self.retrieve(query_text, keywords, threshold, top_k, result_formatter=result_formatter, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
     
     def retrieve(self, query_text: str, keywords: Optional[List[str]] = None,
-                threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,prefixes=None) -> List[Dict]:
+                threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Dict]:
         """Synchronously retrieve relevant documents."""
-        results = self.search(query_text, keywords, top_k, threshold, prefixes)
+        results = self.search(query_text, keywords, top_k, threshold, prefixes, include_doc_ids, exclude_doc_ids)
         return self._process_search_results(results, result_formatter=result_formatter)
     
     async def retrieve_async(self, query_text: str, keywords: Optional[List[str]] = None,
-                           threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,prefixes=None) -> List[Dict]:
+                           threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Dict]:
         """Asynchronously retrieve relevant documents."""
-        results = await self.search_async(query_text, keywords, top_k, threshold, prefixes)
+        results = await self.search_async(query_text, keywords, top_k, threshold, prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
         return self._process_search_results(results, result_formatter=result_formatter)
     
     def retrieve_best_chunk_per_document(
@@ -678,7 +692,9 @@ class RAG_Engine:
         prefixes=None,
         result_formatter: Optional[BaseResultFormatter] = None,
         search_mode: Optional[SearchMode] = SearchMode.HYBRID,
-        sort_globally: Optional[bool] = False
+        sort_globally: Optional[bool] = False,
+        include_doc_ids: Optional[List[str]] = None,
+        exclude_doc_ids: Optional[List[str]] = None
     ) -> List[Dict]:
         """
         Retrieve the best matching chunks per document for a given query.
@@ -703,7 +719,9 @@ class RAG_Engine:
         candidate_results = self.search_best_chunk_per_document(
             query_text, keywords, per_doc_top_n=per_doc_top_n,
             threshold=threshold, prefixes=prefixes, search_mode=search_mode,
-            sort_globally=sort_globally
+            sort_globally=sort_globally, 
+            include_doc_ids=include_doc_ids,
+            exclude_doc_ids=exclude_doc_ids
         )
         
         # Process the candidate results into a standard format.
@@ -753,7 +771,7 @@ class RAG_Engine:
         return retrieved_docs if retrieved_docs else [{"id": "None.", "url": "None.", "text": None}]
     
 
-    def search_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False):
+    def search_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False, include_doc_ids=None, exclude_doc_ids=None):
         """
         Perform an advanced search and return the top 'per_doc_top_n' chunks per document.
         Assumes that the doc_id is structured as: fileName_timestamp_chunk{idx}.
@@ -770,7 +788,7 @@ class RAG_Engine:
         """
         # Retrieve a large candidate pool by setting top_n high.
         # (You may adjust this number based on your collection size.)
-        candidate_results = self.hybrid_search.advanced_search(query_text, keywords, top_n=1000, threshold=threshold, search_mode = search_mode, prefixes=prefixes)
+        candidate_results = self.hybrid_search.advanced_search(query_text, keywords, top_n=1000, threshold=threshold, search_mode = search_mode, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
    
         
         if not candidate_results:
@@ -799,22 +817,28 @@ class RAG_Engine:
     
     
     def search(self, query_text: str, keywords: Optional[List[str]] = None,
-              top_k: int = 5, threshold: float = 0.4, prefixes=None) -> List[Tuple[str, float]]:
+              top_k: int = 5, threshold: float = 0.4, prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Tuple[str, float]]:
         """Perform synchronous search."""
         try:
             return self.hybrid_search.advanced_search(
-                query_text, keywords=keywords, top_n=top_k, threshold=threshold, prefixes=prefixes
+                query_text,
+                keywords           = keywords,
+                top_n              = top_k,
+                threshold          = threshold,
+                prefixes           = prefixes,
+                include_doc_ids    = include_doc_ids,
+                exclude_doc_ids    = exclude_doc_ids
             )
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return []
     
     async def search_async(self, query_text: str, keywords: Optional[List[str]] = None,
-                         top_k: int = 5, threshold: float = 0.4, prefixes=None) -> List[Tuple[str, float]]:
+                         top_k: int = 5, threshold: float = 0.4, prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Tuple[str, float]]:
         """Perform asynchronous search."""
         try:
             return await self.hybrid_search.advanced_search_async(
-                query_text, keywords=keywords, top_n=top_k, threshold=threshold, prefixes=prefixes
+                query_text, keywords=keywords, top_n=top_k, threshold=threshold, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids
             )
         except Exception as e:
             logger.error(f"Async search failed: {e}")

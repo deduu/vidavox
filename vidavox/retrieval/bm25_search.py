@@ -240,52 +240,176 @@ class BM25_search:
                 print("BM25 is not initialized.")
                 return []
 
-    def get_top_n_docs(self, query: str, n: int = 5) -> List[Tuple[str, str, float]]:
-        if not query.strip():
-            return []
-        processed_query = self.preprocess(query)
-        with self.lock:
-            if not self.bm25:
-                return []
-            scores = self.bm25.get_scores(processed_query)
-            scored_indices = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-            results = []
-            for idx, score in scored_indices[:n]:
-                doc_id = self.doc_ids[idx]
-                results.append((doc_id, self.doc_dict[doc_id]["text"], score))
-            return results
-            
-    async def async_get_top_n_docs(self, query: str, n: int = 5) -> List[Tuple[str, str, float]]:
+    def get_top_n_docs(self, query: str, n: int = 5, include_doc_ids: Optional[List[str]] = None, 
+                   exclude_doc_ids: Optional[List[str]] = None, include_prefixes: Optional[List[str]] = None,
+                   exclude_prefixes: Optional[List[str]] = None) -> List[Tuple[str, str, float]]:
         """
-        Asynchronously gets top N documents for a query.
-        
+        Gets top N documents for a query with efficient document ID and prefix filtering.
+
         Parameters:
         - query (str): The query to search for.
         - n (int): Number of top documents to return.
-        
+        - include_doc_ids (Optional[List[str]]): If provided, only search within these documents.
+        - exclude_doc_ids (Optional[List[str]]): If provided, exclude these documents from search.
+        - include_prefixes (Optional[List[str]]): If provided, only search documents with IDs starting with these prefixes.
+        - exclude_prefixes (Optional[List[str]]): If provided, exclude documents with IDs starting with these prefixes.
+
         Returns:
         - List[Tuple[str, str, float]]: List of (doc_id, document text, score) tuples.
         """
         if not query.strip():
             return []
+
+        processed_query = self.preprocess(query)
+        
+        with self.lock:
+            if not self.bm25 or not self.doc_ids:
+                return []
+                
+            # Convert exclude_doc_ids to a set for O(1) lookups
+            exclude_set = set(exclude_doc_ids) if exclude_doc_ids else set()
+            include_set = set(include_doc_ids) if include_doc_ids else None
+            
+            # Prepare prefix filters
+            include_prefixes_list = include_prefixes if include_prefixes else None
+            exclude_prefixes_list = exclude_prefixes if exclude_prefixes else []
+            
+            # Determine which document indices to score
+            doc_indices_to_score = []
+            filtered_doc_ids = []
+            
+            for i, doc_id in enumerate(self.doc_ids):
+                # Skip if explicitly excluded
+                if doc_id in exclude_set:
+                    continue
+                    
+                # Skip if prefix is explicitly excluded
+                if any(doc_id.startswith(prefix) for prefix in exclude_prefixes_list):
+                    continue
+                    
+                # Only include if in the include list (if specified)
+                if include_set is not None and doc_id not in include_set:
+                    # But still check prefix inclusion which can override
+                    if include_prefixes_list is None or not any(doc_id.startswith(prefix) for prefix in include_prefixes_list):
+                        continue
+                
+                # If include_prefixes is specified and we got here from not being in exclude list,
+                # check if the doc_id matches any of the include prefixes
+                if include_set is None and include_prefixes_list is not None:
+                    if not any(doc_id.startswith(prefix) for prefix in include_prefixes_list):
+                        continue
+                
+                # If we've reached here, the document passed all filters
+                doc_indices_to_score.append(i)
+                filtered_doc_ids.append(doc_id)
+                        
+            if not doc_indices_to_score:
+                return []  # No documents to search
+                
+            # Get scores for all documents from BM25
+            all_scores = self.bm25.get_scores(processed_query)
+            
+            # Extract only the scores for documents we care about
+            filtered_scores = [(filtered_doc_ids[i], all_scores[doc_indices_to_score[i]]) 
+                            for i in range(len(doc_indices_to_score))]
+            
+            # Sort by score and take top n
+            top_docs = sorted(filtered_scores, key=lambda x: x[1], reverse=True)[:n]
+            
+            # Build final result with document text
+            results = []
+            for doc_id, score in top_docs:
+                results.append((doc_id, self.doc_dict[doc_id]["text"], score))
+                
+            return results
+
+    async def async_get_top_n_docs(self, query: str, n: int = 5, include_doc_ids: Optional[List[str]] = None, 
+                                exclude_doc_ids: Optional[List[str]] = None, include_prefixes: Optional[List[str]] = None,
+                                exclude_prefixes: Optional[List[str]] = None) -> List[Tuple[str, str, float]]:
+        """
+        Asynchronously gets top N documents for a query with efficient document ID and prefix filtering.
+
+        Parameters:
+        - query (str): The query to search for.
+        - n (int): Number of top documents to return.
+        - include_doc_ids (Optional[List[str]]): If provided, only search within these documents.
+        - exclude_doc_ids (Optional[List[str]]): If provided, exclude these documents from search.
+        - include_prefixes (Optional[List[str]]): If provided, only search documents with IDs starting with these prefixes.
+        - exclude_prefixes (Optional[List[str]]): If provided, exclude documents with IDs starting with these prefixes.
+
+        Returns:
+        - List[Tuple[str, str, float]]: List of (doc_id, document text, score) tuples.
+        """
+        if not query.strip():
+            return []
+            
         processed_query = await self.async_preprocess(query)
         
-        # Define the scoring and sorting function to run in a separate thread
-        def score_and_sort():
-            if not self.bm25:
+        # Define the function to run in a separate thread
+        def filter_and_score():
+            if not self.bm25 or not self.doc_ids:
                 return []
-            scores = self.bm25.get_scores(processed_query)
-            scored_indices = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+                
+            # Convert exclude_doc_ids to a set for O(1) lookups
+            exclude_set = set(exclude_doc_ids) if exclude_doc_ids else set()
+            include_set = set(include_doc_ids) if include_doc_ids else None
+            
+            # Prepare prefix filters
+            include_prefixes_list = include_prefixes if include_prefixes else None
+            exclude_prefixes_list = exclude_prefixes if exclude_prefixes else []
+            
+            # Determine which document indices to score
+            doc_indices_to_score = []
+            filtered_doc_ids = []
+            
+            for i, doc_id in enumerate(self.doc_ids):
+                # Skip if explicitly excluded
+                if doc_id in exclude_set:
+                    continue
+                    
+                # Skip if prefix is explicitly excluded
+                if any(doc_id.startswith(prefix) for prefix in exclude_prefixes_list):
+                    continue
+                    
+                # Only include if in the include list (if specified)
+                if include_set is not None and doc_id not in include_set:
+                    # But still check prefix inclusion which can override
+                    if include_prefixes_list is None or not any(doc_id.startswith(prefix) for prefix in include_prefixes_list):
+                        continue
+                
+                # If include_prefixes is specified and we got here from not being in exclude list,
+                # check if the doc_id matches any of the include prefixes
+                if include_set is None and include_prefixes_list is not None:
+                    if not any(doc_id.startswith(prefix) for prefix in include_prefixes_list):
+                        continue
+                
+                # If we've reached here, the document passed all filters
+                doc_indices_to_score.append(i)
+                filtered_doc_ids.append(doc_id)
+                        
+            if not doc_indices_to_score:
+                return []  # No documents to search
+                
+            # Get scores for all documents from BM25
+            all_scores = self.bm25.get_scores(processed_query)
+            
+            # Extract only the scores for documents we care about
+            filtered_scores = [(filtered_doc_ids[i], all_scores[doc_indices_to_score[i]]) 
+                            for i in range(len(doc_indices_to_score))]
+            
+            # Sort by score and take top n
+            top_docs = sorted(filtered_scores, key=lambda x: x[1], reverse=True)[:n]
+            
+            # Build final result with document text
             results = []
-            for idx, score in scored_indices[:n]:
-                doc_id = self.doc_ids[idx]
+            for doc_id, score in top_docs:
                 results.append((doc_id, self.doc_dict[doc_id]["text"], score))
+                
             return results
         
         with self.lock:
-            return await asyncio.to_thread(score_and_sort)
-    
-
+            return await asyncio.to_thread(filter_and_score)
+        
     def restore_index_from_bm25_terms(self, bm25_terms: Dict[str, Dict[str, int]]) -> None:
         """
         Rebuild the BM25 index using precomputed term frequencies.

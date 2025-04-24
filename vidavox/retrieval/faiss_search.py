@@ -1,6 +1,6 @@
 import threading
 import asyncio
-from typing import List, Tuple, Optional, Any, Union, Dict
+from typing import List, Tuple, Optional, Any, Union, Dict, Set, Callable
 from sentence_transformers import SentenceTransformer
 import logging
 import faiss
@@ -9,6 +9,208 @@ import numpy as np
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class IDFilter:
+    """
+    Base class for ID filtering operations in FAISS searches.
+    """
+    def get_selector(self) -> Optional[faiss.IDSelector]:
+        """Returns a FAISS IDSelector for filtering during search"""
+        raise NotImplementedError("Subclasses must implement get_selector")
+
+    def filter_results(self, distances: np.ndarray, indices: np.ndarray, id_mapping: Dict[int, str]) -> Tuple[np.ndarray, np.ndarray]:
+        """Post-processes search results by filtering based on IDs"""
+        raise NotImplementedError("Subclasses must implement filter_results")
+
+class IncludeIDsFilter(IDFilter):
+    """Filter that includes only documents with specific IDs"""
+    def __init__(self, include_ids: Set[str], reverse_id_map: Dict[str, int]):
+        """
+        Initialize with IDs to include.
+        
+        Args:
+            include_ids: Set of document IDs to include
+            reverse_id_map: Mapping from doc_id to FAISS integer ID
+        """
+        self.include_ids = include_ids
+        self.include_faiss_ids = set()
+        for doc_id in include_ids:
+            if doc_id in reverse_id_map:
+                self.include_faiss_ids.add(reverse_id_map[doc_id])
+    
+    def get_selector(self) -> Optional[faiss.IDSelector]:
+        if not self.include_faiss_ids:
+            return None
+        
+        # Convert to list and ensure it's a numpy array with the right type
+        ids_list = list(self.include_faiss_ids)
+        if not ids_list:
+            return None
+        
+        # Create a long array (int64)
+        ids_array = np.array(ids_list, dtype='int64')
+        
+        # Pass the array directly without size (the size is determined from the array)
+        return faiss.IDSelectorBatch(ids_array)
+    
+    def filter_results(self, distances: np.ndarray, indices: np.ndarray, id_mapping: Dict[int, str]) -> Tuple[np.ndarray, np.ndarray]:
+        if not self.include_ids:
+            return np.array([]), np.array([])
+        
+        valid_indices = []
+        for i, idx in enumerate(indices):
+            if idx == -1:  # FAISS uses -1 for invalid/empty results
+                continue
+            doc_id = id_mapping.get(idx)
+            if doc_id in self.include_ids:
+                valid_indices.append(i)
+        
+        if not valid_indices:
+            return np.array([]), np.array([])
+            
+        return distances[valid_indices], indices[valid_indices]
+
+class ExcludeIDsFilter(IDFilter):
+    """Filter that excludes documents with specific IDs"""
+    def __init__(self, exclude_ids: Set[str], reverse_id_map: Dict[str, int]):
+        """
+        Initialize with IDs to exclude.
+        
+        Args:
+            exclude_ids: Set of document IDs to exclude
+            reverse_id_map: Mapping from doc_id to FAISS integer ID
+        """
+        self.exclude_ids = exclude_ids
+        self.exclude_faiss_ids = set()
+        for doc_id in exclude_ids:
+            if doc_id in reverse_id_map:
+                self.exclude_faiss_ids.add(reverse_id_map[doc_id])
+    
+    def get_selector(self) -> Optional[faiss.IDSelector]:
+        if not self.exclude_faiss_ids:
+            return None
+            
+         # Convert to list and ensure it's a numpy array with the right type
+        ids_list = list(self.exclude_faiss_ids)
+        if not ids_list:
+            return None
+        
+        # Create a long array (int64)
+        ids_array = np.array(ids_list, dtype='int64')
+        
+        # Create the exclude selector
+        exclude_selector = faiss.IDSelectorBatch(ids_array)
+        
+        # Invert it to get "everything except these IDs"
+        return faiss.IDSelectorNot(exclude_selector)
+    
+    def filter_results(self, distances: np.ndarray, indices: np.ndarray, id_mapping: Dict[int, str]) -> Tuple[np.ndarray, np.ndarray]:
+        valid_indices = []
+        for i, idx in enumerate(indices):
+            if idx == -1:  # FAISS uses -1 for invalid/empty results
+                continue
+            doc_id = id_mapping.get(idx)
+            if doc_id not in self.exclude_ids:
+                valid_indices.append(i)
+        
+        if not valid_indices:
+            return np.array([]), np.array([])
+            
+        return distances[valid_indices], indices[valid_indices]
+
+class PrefixFilter(IDFilter):
+    """Filter that includes only documents with IDs starting with specific prefixes"""
+    def __init__(self, prefixes: List[str], doc_ids: Set[str], reverse_id_map: Dict[str, int]):
+        """
+        Initialize with ID prefixes to include.
+        
+        Args:
+            prefixes: List of prefixes to match document IDs against
+            doc_ids: Set of all document IDs to check against prefixes
+            reverse_id_map: Mapping from doc_id to FAISS integer ID
+        """
+        self.prefixes = prefixes
+        # Find all doc_ids that match any prefix
+        self.matching_ids = {doc_id for doc_id in doc_ids 
+                          if any(doc_id.startswith(prefix) for prefix in prefixes)}
+        self.matching_faiss_ids = {reverse_id_map[doc_id] for doc_id in self.matching_ids 
+                                  if doc_id in reverse_id_map}
+    
+    def get_selector(self) -> Optional[faiss.IDSelector]:
+            if not self.matching_faiss_ids:
+                return None
+            
+            # Convert to list and ensure it's a numpy array with the right type
+            ids_list = list(self.matching_faiss_ids)
+            if not ids_list:
+                return None
+            
+            # Create a long array (int64)
+            ids_array = np.array(ids_list, dtype='int64')
+            
+            # Pass the array directly
+            return faiss.IDSelectorBatch(ids_array)
+    
+    def filter_results(self, distances: np.ndarray, indices: np.ndarray, id_mapping: Dict[int, str]) -> Tuple[np.ndarray, np.ndarray]:
+        valid_indices = []
+        for i, idx in enumerate(indices):
+            if idx == -1:  # FAISS uses -1 for invalid/empty results
+                continue
+            doc_id = id_mapping.get(idx)
+            if doc_id in self.matching_ids:
+                valid_indices.append(i)
+        
+        if not valid_indices:
+            return np.array([]), np.array([])
+            
+        return distances[valid_indices], indices[valid_indices]
+
+class CustomFilter(IDFilter):
+    """Custom filter that uses a user-provided function to filter document IDs"""
+    def __init__(self, filter_fn: Callable[[str], bool], doc_ids: Set[str], reverse_id_map: Dict[str, int]):
+        """
+        Initialize with a custom filtering function.
+        
+        Args:
+            filter_fn: Function that takes a doc_id and returns True if it should be included
+            doc_ids: Set of all document IDs to check
+            reverse_id_map: Mapping from doc_id to FAISS integer ID
+        """
+        self.filter_fn = filter_fn
+        # Apply the filter function to all doc_ids
+        self.matching_ids = {doc_id for doc_id in doc_ids if filter_fn(doc_id)}
+        self.matching_faiss_ids = {reverse_id_map[doc_id] for doc_id in self.matching_ids 
+                                  if doc_id in reverse_id_map}
+    
+    def get_selector(self) -> Optional[faiss.IDSelector]:
+        if not self.matching_faiss_ids:
+            return None
+        
+        # Convert to list and ensure it's a numpy array with the right type
+        ids_list = list(self.matching_faiss_ids)
+        if not ids_list:
+            return None
+        
+        # Create a long array (int64)
+        ids_array = np.array(ids_list, dtype='int64')
+    
+        # Pass the array directly
+        return faiss.IDSelectorBatch(ids_array)
+    
+    def filter_results(self, distances: np.ndarray, indices: np.ndarray, id_mapping: Dict[int, str]) -> Tuple[np.ndarray, np.ndarray]:
+        valid_indices = []
+        for i, idx in enumerate(indices):
+            if idx == -1:
+                continue
+            doc_id = id_mapping.get(idx)
+            if doc_id in self.matching_ids:
+                valid_indices.append(i)
+        
+        if not valid_indices:
+            return np.array([]), np.array([])
+            
+        return distances[valid_indices], indices[valid_indices]
+    
 
 class FAISS_search:
     """
@@ -24,10 +226,14 @@ class FAISS_search:
         """
         self.doc_dict: Dict[str, str] = {}   # Maps doc_id to document text
         self.id_map: Dict[str, int] = {}       # Maps doc_id to an integer ID for FAISS
+        self.reverse_id_map: Dict[int, str] = {}  # Maps integer ID back to doc_id
         self.next_index_id: int = 0            # Next available integer ID
+        self.embedding_model = None
+        self.dimension = None
         self.embedding_model = self._initialize_embedding_model(embedding_model)
         self.dimension = self.get_embedding_dimension()
         self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+        
         self.lock = threading.Lock()
 
     def _initialize_embedding_model(
@@ -118,6 +324,7 @@ class FAISS_search:
                 # Assign a new integer ID for FAISS
                 current_index = self.next_index_id
                 self.id_map[doc_id] = current_index
+                self.reverse_id_map[current_index] = doc_id  # For reverse lookup
                 new_ids.append(current_index)
                 new_texts.append(doc)
                 self.next_index_id += 1
@@ -155,6 +362,7 @@ class FAISS_search:
                 # Assign a new integer ID for FAISS
                 current_index = self.next_index_id
                 self.id_map[doc_id] = current_index
+                self.reverse_id_map[current_index] = doc_id  # For reverse lookup
                 new_ids.append(current_index)
                 new_texts.append(doc)
                 self.next_index_id += 1
@@ -191,9 +399,16 @@ class FAISS_search:
             if doc_id not in self.doc_dict:
                 logger.warning(f"Document ID {doc_id} not found.")
                 return False
+            
+            # Get FAISS integer ID before removing from dictionaries
+            faiss_id = self.id_map.get(doc_id)
+            
             # Remove document from dictionaries
             del self.doc_dict[doc_id]
             del self.id_map[doc_id]
+            if faiss_id is not None:
+                del self.reverse_id_map[faiss_id]
+                
         # Rebuild the index since individual deletion is nontrivial
         self._rebuild_index()
         logger.info(f"Removed document ID: {doc_id}")
@@ -207,9 +422,15 @@ class FAISS_search:
             if doc_id not in self.doc_dict:
                 logger.warning(f"Document ID {doc_id} not found.")
                 return False
+                
+            # Get FAISS integer ID before removing from dictionaries
+            faiss_id = self.id_map.get(doc_id)
+            
             # Remove document from dictionaries
             del self.doc_dict[doc_id]
             del self.id_map[doc_id]
+            if faiss_id is not None:
+                del self.reverse_id_map[faiss_id]
         
         # Asynchronously rebuild the index
         await self._async_rebuild_index()
@@ -225,10 +446,12 @@ class FAISS_search:
             all_texts = [self.doc_dict[d] for d in all_doc_ids]
             # Reassign integer IDs continuously
             self.id_map = {}
+            self.reverse_id_map = {}
             new_ids = []
             self.next_index_id = 0
             for doc_id in all_doc_ids:
                 self.id_map[doc_id] = self.next_index_id
+                self.reverse_id_map[self.next_index_id] = doc_id
                 new_ids.append(self.next_index_id)
                 self.next_index_id += 1
             try:
@@ -248,10 +471,12 @@ class FAISS_search:
             all_texts = [self.doc_dict[d] for d in all_doc_ids]
             # Reassign integer IDs continuously
             self.id_map = {}
+            self.reverse_id_map = {}
             new_ids = []
             self.next_index_id = 0
             for doc_id in all_doc_ids:
                 self.id_map[doc_id] = self.next_index_id
+                self.reverse_id_map[self.next_index_id] = doc_id
                 new_ids.append(self.next_index_id)
                 self.next_index_id += 1
         
@@ -275,31 +500,73 @@ class FAISS_search:
         except Exception as e:
             raise RuntimeError(f"Failed to rebuild embeddings asynchronously: {str(e)}")
 
-    def search(self, query: str, k: int) -> Tuple[np.ndarray, np.ndarray]:
+    def search(self, query: str, k: int, id_filter: Optional[IDFilter] = None) -> Tuple[np.ndarray, List[str]]:
         """
         Searches the FAISS index for the top-k documents matching the query.
-        Returns a tuple of (distances, indices).
+        
+        Args:
+            query: The search query text
+            k: Number of results to return
+            id_filter: Optional IDFilter to apply during search
+            
+        Returns:
+            A tuple of (distances, doc_ids)
         """
         with self.lock:
             if self.index.ntotal == 0:
                 logger.info("FAISS index is empty. No results can be returned.")
-                return np.array([]), np.array([])
+                return np.array([]), []
+        
         try:
             query_embedding = self.embedding_model.encode([query], convert_to_numpy=True).astype('float32')
+            
+            # Apply ID filter if provided during search
+            if id_filter is not None:
+                selector = id_filter.get_selector()
+                if selector is not None:
+                    params = faiss.SearchParameters()
+                    params.sel = selector
+                    distances, indices = self.index.search(query_embedding, k, params=params)
+                else:
+                    distances, indices = self.index.search(query_embedding, k)
+                    
+                # Apply post-filtering if needed
+                distances, indices = distances[0], indices[0]
+                distances, indices = id_filter.filter_results(distances, indices, self.reverse_id_map)
+            else:
+                distances, indices = self.index.search(query_embedding, k)
+                distances, indices = distances[0], indices[0]
+            
+            # Convert FAISS integer IDs back to document IDs
+            doc_ids = []
+            for idx in indices:
+                if idx == -1:  # FAISS uses -1 for invalid/empty results
+                    continue
+                doc_id = self.reverse_id_map.get(idx)
+                if doc_id:
+                    doc_ids.append(doc_id)
+                    
+            return distances[:len(doc_ids)], doc_ids
+            
         except Exception as e:
             raise RuntimeError(f"Failed to encode query: {str(e)}")
-        distances, indices = self.index.search(query_embedding, k)
-        return distances[0], indices[0]
     
-    async def async_search(self, query: str, k: int) -> Tuple[np.ndarray, np.ndarray]:
+    async def async_search(self, query: str, k: int, id_filter: Optional[IDFilter] = None) -> Tuple[np.ndarray, List[str]]:
         """
         Asynchronously searches the FAISS index for the top-k documents matching the query.
-        Returns a tuple of (distances, indices).
+        
+        Args:
+            query: The search query text
+            k: Number of results to return
+            id_filter: Optional IDFilter to apply during search
+            
+        Returns:
+            A tuple of (distances, doc_ids)
         """
         with self.lock:
             if self.index.ntotal == 0:
                 logger.info("FAISS index is empty. No results can be returned.")
-                return np.array([]), np.array([])
+                return np.array([]), []
         
         try:
             # Asynchronously encode the query
@@ -310,13 +577,48 @@ class FAISS_search:
             )
             query_embedding = query_embedding.astype('float32')
             
-            # Asynchronously search the index
-            distances, indices = await asyncio.to_thread(
-                self.index.search,
-                query_embedding,
-                k
-            )
-            return distances[0], indices[0]
+            # Apply ID filter if provided during search
+            if id_filter is not None:
+                selector = id_filter.get_selector()
+                if selector is not None:
+                    params = faiss.SearchParameters()
+                    params.sel = selector
+                    distances, indices = await asyncio.to_thread(
+                        self.index.search,
+                        query_embedding,
+                        k,
+                        params
+                    )
+                else:
+                    distances, indices = await asyncio.to_thread(
+                        self.index.search,
+                        query_embedding,
+                        k
+                    )
+                    
+                # Apply post-filtering if needed
+                distances, indices = distances[0], indices[0]
+                distances, indices = id_filter.filter_results(distances, indices, self.reverse_id_map)
+            else:
+                # Asynchronously search the index
+                distances, indices = await asyncio.to_thread(
+                    self.index.search,
+                    query_embedding,
+                    k
+                )
+                distances, indices = distances[0], indices[0]
+            
+            # Convert FAISS integer IDs back to document IDs
+            doc_ids = []
+            for idx in indices:
+                if idx == -1:  # FAISS uses -1 for invalid/empty results
+                    continue
+                doc_id = self.reverse_id_map.get(idx)
+                if doc_id:
+                    doc_ids.append(doc_id)
+                    
+            return distances[:len(doc_ids)], doc_ids
+            
         except Exception as e:
             raise RuntimeError(f"Failed to encode query asynchronously: {str(e)}")
     
@@ -343,12 +645,14 @@ class FAISS_search:
         with self.lock:
             # Reset id_map and next_index_id.
             self.id_map = {}
+            self.reverse_id_map = {}
             new_ids = []
             new_vectors = []
             # Use the ordering from the vectors_map.
             for doc_id, vector in vectors_map.items():
                 # Store the document in the id_map with a new integer id.
                 self.id_map[doc_id] = self.next_index_id
+                self.reverse_id_map[self.next_index_id] = doc_id
                 new_ids.append(self.next_index_id)
                 new_vectors.append(vector)
                 self.next_index_id += 1
@@ -370,11 +674,13 @@ class FAISS_search:
         async with self.lock:
             # Reset id_map and next_index_id.
             self.id_map = {}
+            self.reverse_id_map = {}
             new_ids = []
             new_vectors = []
 
             for doc_id, vector in vectors_map.items():
                 self.id_map[doc_id] = self.next_index_id
+                self.reverse_id_map[self.next_index_id] = doc_id
                 new_ids.append(self.next_index_id)
                 new_vectors.append(vector)
                 self.next_index_id += 1
@@ -403,6 +709,7 @@ class FAISS_search:
         with self.lock:
             self.doc_dict.clear()
             self.id_map.clear()
+            self.reverse_id_map.clear()
             self.next_index_id = 0
             self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
         logger.info("FAISS documents cleared and index reset.")
@@ -414,6 +721,7 @@ class FAISS_search:
         with self.lock:
             self.doc_dict.clear()
             self.id_map.clear()
+            self.reverse_id_map.clear()
             self.next_index_id = 0
             self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
         logger.info("FAISS documents cleared and index reset.")
@@ -507,18 +815,74 @@ class FAISS_search:
         except Exception as e:
             logger.error(f"Failed to batch encode documents asynchronously: {e}")
             return {}
-            
-    # Additional async methods for bulk operations
     
-    async def async_search_batch(self, queries: List[str], k: int) -> List[Tuple[np.ndarray, np.ndarray]]:
+    # Additional filtering methods
+    
+    def create_include_filter(self, include_ids: List[str]) -> IDFilter:
         """
-        Asynchronously search multiple queries at once.
-        Returns a list of (distances, indices) tuples.
+        Creates a filter that includes only documents with specific IDs.
+        
+        Args:
+            include_ids: List of document IDs to include in search results
+            
+        Returns:
+            An IDFilter that can be passed to search methods
+        """
+        return IncludeIDsFilter(set(include_ids), self.id_map)
+    
+    def create_exclude_filter(self, exclude_ids: List[str]) -> IDFilter:
+        """
+        Creates a filter that excludes documents with specific IDs.
+        
+        Args:
+            exclude_ids: List of document IDs to exclude from search results
+            
+        Returns:
+            An IDFilter that can be passed to search methods
+        """
+        return ExcludeIDsFilter(set(exclude_ids), self.id_map)
+    
+    def create_prefix_filter(self, prefixes: List[str]) -> IDFilter:
+        """
+        Creates a filter that includes only documents with IDs starting with specific prefixes.
+        
+        Args:
+            prefixes: List of prefixes to match document IDs against
+            
+        Returns:
+            An IDFilter that can be passed to search methods
+        """
+        return PrefixFilter(prefixes, set(self.doc_dict.keys()), self.id_map)
+    
+    def create_custom_filter(self, filter_fn: Callable[[str], bool]) -> IDFilter:
+        """
+        Creates a filter using a custom function to determine which document IDs to include.
+        
+        Args:
+            filter_fn: Function that takes a doc_id and returns True if it should be included
+            
+        Returns:
+            An IDFilter that can be passed to search methods
+        """
+        return CustomFilter(filter_fn, set(self.doc_dict.keys()), self.id_map)
+    
+    async def async_search_batch(self, queries: List[str], k: int, id_filter: Optional[IDFilter] = None) -> List[Tuple[np.ndarray, List[str]]]:
+        """
+        Asynchronously search multiple queries at once with optional ID filtering.
+        Returns a list of (distances, doc_ids) tuples.
+        
+        Args:
+            queries: List of query strings to search
+            k: Number of results to return for each query
+            id_filter: Optional IDFilter to apply to all queries
+            
+        Returns:
+            List of (distances, doc_ids) tuples for each query
         """
         with self.lock:
             if self.index.ntotal == 0:
                 logger.info("FAISS index is empty. No results can be returned.")
-                return [(np.array([]), np.array([]))] * len(queries)
+                return [(np.array([]), [])] * len(queries)
         
         try:
             # Encode all queries at once asynchronously
@@ -533,12 +897,48 @@ class FAISS_search:
             results = []
             for i in range(len(queries)):
                 single_query = query_embeddings[i:i+1]  # Keep as 2D array
-                distances, indices = await asyncio.to_thread(
-                    self.index.search,
-                    single_query,
-                    k
-                )
-                results.append((distances[0], indices[0]))
+                
+                # Apply ID filter if provided during search
+                if id_filter is not None:
+                    selector = id_filter.get_selector()
+                    if selector is not None:
+                        params = faiss.SearchParameters()
+                        params.sel = selector
+                        distances, indices = await asyncio.to_thread(
+                            self.index.search,
+                            single_query,
+                            k,
+                            params
+                        )
+                    else:
+                        distances, indices = await asyncio.to_thread(
+                            self.index.search,
+                            single_query,
+                            k
+                        )
+                        
+                    # Apply post-filtering if needed
+                    distances, indices = distances[0], indices[0]
+                    distances, indices = id_filter.filter_results(distances, indices, self.reverse_id_map)
+                else:
+                    distances, indices = await asyncio.to_thread(
+                        self.index.search,
+                        single_query,
+                        k
+                    )
+                    distances, indices = distances[0], indices[0]
+                
+                # Convert FAISS integer IDs back to document IDs
+                doc_ids = []
+                for idx in indices:
+                    if idx == -1:  # FAISS uses -1 for invalid/empty results
+                        continue
+                    doc_id = self.reverse_id_map.get(idx)
+                    if doc_id:
+                        doc_ids.append(doc_id)
+                
+                results.append((distances[:len(doc_ids)], doc_ids))
+            
             return results
         except Exception as e:
             raise RuntimeError(f"Failed to batch search queries asynchronously: {str(e)}")
@@ -553,4 +953,3 @@ class FAISS_search:
         searcher.dimension = await searcher.async_get_embedding_dimension()
         searcher.index = faiss.IndexIDMap(faiss.IndexFlatL2(searcher.dimension))
         return searcher
-
