@@ -58,7 +58,9 @@ class VectorStorePsql:
                 logger.error(f"Failed to store document {doc_id}: {e}")
                 return False
 
-    async def store_documents_batch(self, docs: List[Tuple[str, str, Dict[str, Any]]]) -> bool:
+    async def store_documents_batch(self, docs: List[Tuple[str, str, Dict[str, Any]]],_debug=True) -> bool:
+        if _debug:
+            logger.info(f"--> Writing {len(docs)} docs to DB")
         async with self.async_session() as session:
             try:
                 for doc_id, text, metadata in docs:

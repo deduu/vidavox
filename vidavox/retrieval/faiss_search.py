@@ -228,8 +228,6 @@ class FAISS_search:
         self.id_map: Dict[str, int] = {}       # Maps doc_id to an integer ID for FAISS
         self.reverse_id_map: Dict[int, str] = {}  # Maps integer ID back to doc_id
         self.next_index_id: int = 0            # Next available integer ID
-        self.embedding_model = None
-        self.dimension = None
         self.embedding_model = self._initialize_embedding_model(embedding_model)
         self.dimension = self.get_embedding_dimension()
         self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
@@ -295,13 +293,13 @@ class FAISS_search:
         """
         self.add_documents([(doc_id, doc)])
         
-    async def async_add_document(self, doc_id: str, doc: str) -> None:
+    async def add_document_async(self, doc_id: str, doc: str) -> None:
         """
         Asynchronously adds a single document to the FAISS index.
         """
-        await self.async_add_documents([(doc_id, doc)])
+        await self.add_documents_async([(doc_id, doc)])
 
-    def add_documents(self, docs_with_ids: List[Tuple[str, str]]) -> None:
+    def add_documents(self, docs_with_ids: List[Tuple[str, str]], return_vectors: bool = False) -> None:
         """
         Efficiently adds multiple documents to the FAISS index and updates internal structures.
         """
@@ -336,10 +334,15 @@ class FAISS_search:
                     raise ValueError("Empty embeddings generated")
                 with self.lock:
                     self.index.add_with_ids(embeddings, np.array(new_ids).astype('int64'))
+                    if return_vectors:
+                        return [(doc_id, embeddings[i]) for i, doc_id in enumerate(
+                        [d for d, _ in docs_with_ids if d in self.id_map]
+                        )]
             except Exception as e:
                 raise RuntimeError(f"Failed to add documents: {str(e)}")
+        return None
                 
-    async def async_add_documents(self, docs_with_ids: List[Tuple[str, str]]) -> None:
+    async def add_documents_async(self, docs_with_ids: List[Tuple[str, str]], return_vectors: bool = False) -> None:
         """
         Asynchronously adds multiple documents to the FAISS index and updates internal structures.
         """
@@ -387,8 +390,14 @@ class FAISS_search:
                         embeddings,
                         np.array(new_ids).astype('int64')
                     )
+                    if return_vectors:
+                        return [(doc_id, embeddings[i]) for i, doc_id in enumerate(
+                        [d for d, _ in docs_with_ids if d in self.id_map]
+                        )]
             except Exception as e:
                 raise RuntimeError(f"Failed to add documents asynchronously: {str(e)}")
+        
+        return None
 
     def remove_document(self, doc_id: str) -> bool:
         """

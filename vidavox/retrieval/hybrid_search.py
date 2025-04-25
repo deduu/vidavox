@@ -43,8 +43,8 @@ class Hybrid_search:
         await self._dynamic_weighting_async(len(query.split()))
         kw_str = " ".join(keywords) if keywords else ""
 
-        bm25_scores, bm25_doc_ids = self._get_bm25_results_async(kw_str, top_n, prefixes, include_doc_ids, exclude_doc_ids)
-        faiss_distances, faiss_doc_ids = self._get_faiss_results_async(query, top_n, prefixes, include_doc_ids, exclude_doc_ids)
+        bm25_scores, bm25_doc_ids = await self._get_bm25_results_async(kw_str, top_n, prefixes, include_doc_ids, exclude_doc_ids)
+        faiss_distances, faiss_doc_ids = await self._get_faiss_results_async(query, top_n, prefixes, include_doc_ids, exclude_doc_ids)
         
         # Map document IDs to scores.
         bm25_scores_dict, faiss_scores_dict = await self._map_scores_to_doc_ids_async(

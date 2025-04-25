@@ -1,3 +1,5 @@
+from typing import List
+from vidavox.core.llm import Client
 class AgentWorkFlow:
     def __init__(self, tools: List[callable], llm:Client, system_prompt: str):
         self.tools = tools

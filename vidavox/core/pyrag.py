@@ -11,6 +11,7 @@ import pandas as pd
 
 from vidavox.utils.pretty_logger import pretty_json_log
 from vidavox.utils.doc_tracker import compute_checksum
+from vidavox.retrieval.persistence_search import AsyncPersistence
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -56,7 +57,6 @@ class Doc:
 class DocumentManager:
     def __init__(self):
         self.documents: Dict[str, Doc] = {}
-        # self.vector_store = vector_store
         self.lock = threading.Lock()  # for thread safety
 
     def add_document(self, doc_id: str, text: str, meta_data: Optional[Dict] = None) -> None:
@@ -257,7 +257,10 @@ class RAG_Engine:
         self.show_docs = show_docs
         self.token_counter = TokenCounter()
         self.embedding_model = embedding_model
+        
         self.vector_store = vector_store
+        self.persistence = AsyncPersistence(self.vector_store) if vector_store else None
+
         
         # Initialize document store
         self.doc_manager = DocumentManager()
@@ -598,15 +601,19 @@ class RAG_Engine:
             
             # Update search indices in batch
             self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
-            self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)))
-            
-            if self.vector_store:
-                bm25_terms_map = self.bm25_wrapper.get_multiple_doc_terms(doc_ids)
-                for doc_id, terms in bm25_terms_map.items():
-                    # runs in a thread so we don't block
-                    asyncio.get_running_loop().run_in_executor(
-                        None, self.vector_store.store_bm25_terms, doc_id, terms
-                    )
+            inserted_vectors = self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)), return_vectors=True)
+
+            logger.info(f"Added {len(doc_ids)} documents to the engine.")
+            if self.persistence:
+                self.persistence.queue_docs(docs)
+                logger.info(f"Persisted {len(doc_ids)} documents to the persistence store.")
+                if inserted_vectors:                       # never None when return_vectors=True
+                    self.persistence.queue_vectors(inserted_vectors)
+                    logger.info(f"Persisted {len(inserted_vectors)} FAISS vectors to the persistence store.")
+                self.persistence.queue_bm25(self.bm25_wrapper.get_multiple_doc_terms(doc_ids))
+                self.persistence.queue_token_counts([(d, len(t.split())) for d, t in zip(doc_ids, texts)])
+                # asyncio.run(self.persistence.flush())      # or  asyncio.run(self.persistence.flush())
+
 
         except Exception as e:
             logger.error(f"Failed to process document batch: {e}")
@@ -629,9 +636,38 @@ class RAG_Engine:
             logger.error(f"Failed to add document {doc_id}: {e}")
             raise
     
+    async def add_document_async(self, doc_id: str, text: str, meta_data: Optional[Dict]=None):
+        # document manager is thread-safe, so we can call it directly
+        self.doc_manager.add_document(doc_id, text, meta_data)
+        self.token_counter.add_document(doc_id, text)
+
+        # assume your wrappers support async; if not, wrap in to_thread
+        await self.bm25_wrapper.add_document_async(doc_id, text)
+        await self.faiss_wrapper.add_document_async(doc_id, text)
+
+        # queue for persistence
+        if self.persistence:
+            self.persistence.queue_docs([(doc_id, text, meta_data or {})])
+            # and then maybe immediately flush
+            await self.persistence.flush_async()
+    
     def add_documents(self, docs: List[Tuple[str, str, Optional[Dict]]]) -> None:
         """Add multiple documents to the engine efficiently."""
         self._process_document_batch(docs)
+
+    async def add_documents_async(self, docs: List[Tuple[str, str, Dict]]):
+        # mirror your sync batch logic, but with awaits
+        self.doc_manager.add_documents(docs)
+        for doc_id, text, _ in docs:
+            self.token_counter.add_document(doc_id, text)
+        await self.bm25_wrapper.add_documents_async([(d, t) for d, t, _ in docs])
+        vecs = await self.faiss_wrapper.add_documents_async([(d, t) for d, t, _ in docs], return_vectors=True)
+
+        # queue and flush
+        if self.persistence:
+            self.persistence.queue_docs(docs)
+            self.persistence.queue_vectors(vecs)
+            await self.persistence.flush_async()
     
     def delete_document(self, doc_id: str) -> bool:
         """Remove a document from the engine."""
@@ -658,6 +694,28 @@ class RAG_Engine:
         except Exception as e:
             logger.error(f"Error deleting document {doc_id}: {e}")
             return False
+        
+    async def delete_document_async(self, doc_id: str) -> bool:
+        if doc_id not in self.doc_manager.doc_ids:
+            return False
+        idx = self.doc_manager.doc_ids.index(doc_id)
+
+        # remove from search backends
+        await self.bm25_wrapper.remove_document_async(idx)
+        await self.faiss_wrapper.remove_document_async(idx)
+        self.token_counter.remove_document(doc_id)
+        self.doc_manager.delete_document(doc_id)
+        # persistence might also need 
+        if self.persistence:
+            await self.persistence.flush_async()
+        return True
+
+    async def clear_async(self):
+        self.doc_manager.clear()
+        self.token_counter = TokenCounter()
+        await self.bm25_wrapper.clear_documents_async()
+        await self.faiss_wrapper.clear_documents_async()
+        await self.persistence.clear_async()
     
     def query(self, query_text: str, keywords: Optional[List[str]] = None,
          threshold: float = 0.4, top_k: int = 5,
@@ -868,65 +926,61 @@ class RAG_Engine:
         """Save the engine state to disk."""
         state_manager = StateManager()
         state_data = {
-            "doc_ids": self.doc_manager.doc_ids,
-            "documents": self.doc_manager.documents,
-            "meta_data": self.doc_manager.meta_data,
-            "token_counts": self.token_counter.doc_tokens,
             "embedding_model": self.embedding_model,
+            "documents": {
+                doc_id: (doc.text, doc.meta_data)
+                for doc_id, doc in self.doc_manager.documents.items()
+            },
+            "token_counts": dict(self.token_counter.doc_tokens),
         }
         return state_manager.save_state(path, state_data)
     
     def load_state(self, path: str) -> bool:
-        """Load the engine state from disk."""
         state_manager = StateManager()
         state_data = state_manager.load_state(path)
-        
         if not state_data:
             logger.info("No previous state found, initializing fresh state.")
             return False
-            
+
         try:
-            # Restore document manager state
-            self.doc_manager.doc_ids = state_data["doc_ids"]
-            self.doc_manager.documents = state_data["documents"]
-            self.doc_manager.meta_data = state_data["meta_data"]
-            
-            # Restore token counter
-            self.token_counter.doc_tokens = state_data["token_counts"]
+            # 1) restore docs in memory
+            docs = [
+                (doc_id, text, meta)
+                for doc_id, (text, meta) in state_data["documents"].items()
+            ]
+            self.doc_manager.clear()
+            self.doc_manager.add_documents(docs)
+
+            # 2) restore token counts
+            self.token_counter.doc_tokens = state_data.get("token_counts", {})
             self.token_counter.total_tokens = sum(self.token_counter.doc_tokens.values())
-            
-            # Check if embedding model matches
-            stored_model = state_data.get("embedding_model")
-            if stored_model and stored_model != self.embedding_model:
-                logger.warning(f"Loaded state used embedding model '{stored_model}' "
-                              f"but current instance uses '{self.embedding_model}'")
-            
-            # Rebuild search indices
+
+            # 3) warn on model mismatch
+            stored = state_data.get("embedding_model")
+            if stored and stored != self.embedding_model:
+                logger.warning(
+                    "State was saved with model %s, current engine uses %s",
+                    stored, self.embedding_model,
+                )
+
+            # 4) rebuild indices in one batch
+            batch = [(doc_id, text) for doc_id, (text, _) in state_data["documents"].items()]
             self.bm25_wrapper.clear_documents()
             self.faiss_wrapper.clear_documents()
-            
-            # Use batch operations for efficiency
-            BATCH_SIZE = 100
-            doc_batches = [
-                list(zip(
-                    self.doc_manager.doc_ids[i:i+BATCH_SIZE],
-                    self.doc_manager.documents[i:i+BATCH_SIZE]
-                ))
-                for i in range(0, len(self.doc_manager.doc_ids), BATCH_SIZE)
-            ]
-            
-            for batch in doc_batches:
+            if batch:
                 self.bm25_wrapper.add_documents(batch)
                 self.faiss_wrapper.add_documents(batch)
-            
-            logger.info("System state loaded successfully with documents and indices rebuilt.")
+
+            logger.info(
+                "Loaded state: %d documents rebuilt into BM25 & FAISS",
+                len(batch),
+            )
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to restore state: {e}")
             self._reset_state()
             return False
-    
     def _reset_state(self) -> None:
         """Reset the engine to initial state."""
         self.doc_manager = DocumentManager()

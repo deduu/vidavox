@@ -102,7 +102,7 @@ class BM25_search:
             self.doc_ids = list(self.doc_dict.keys())
             self.update_bm25()
             
-    async def async_add_document(self, doc_id: str, new_doc: str) -> None:
+    async def add_document_async(self, doc_id: str, new_doc: str) -> None:
         """
         Asynchronously adds a single document to the corpus and updates the BM25 index.
         
@@ -137,7 +137,7 @@ class BM25_search:
             self.doc_ids = list(self.doc_dict.keys())
             self.update_bm25()
             
-    async def async_add_documents(self, docs_with_ids: List[Tuple[str, str]]) -> None:
+    async def add_documents_async(self, docs_with_ids: List[Tuple[str, str]]) -> None:
         """
         Asynchronously adds multiple documents to the corpus and updates the BM25 index once.
         
