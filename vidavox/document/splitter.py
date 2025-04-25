@@ -45,7 +45,7 @@ class DocumentSplitter:
             pretty_json_log(logger, file_extension)
 
             splitter_config = self.splitter_configs.get(file_extension, self.splitter_configs["default"])
-            pretty_json_log(logger, f"splitter_config: {splitter_config}")
+            # pretty_json_log(logger, f"splitter_config: {splitter_config}")
             
             try:
                 splitter = splitter_config.splitter_class(**splitter_config.params)

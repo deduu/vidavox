@@ -81,7 +81,7 @@ class Hybrid_search:
             prefixes: Optional[List[str]] = None,
             include_doc_ids: Optional[List[str]] = None,   #  ← NEW
             exclude_doc_ids: Optional[List[str]] = None,   #  ← NEW
-            search_mode: Optional[SearchMode] = None
+            search_mode: Optional[SearchMode] = None,
     ) -> List[Tuple[str, float]]:
         
         if search_mode:
@@ -143,6 +143,12 @@ class Hybrid_search:
                 return np.empty(0), np.empty(0, dtype=str)
             ids, scores = zip(*[(d, s) for d, _, s in raw])
             return np.asarray(scores), np.asarray(ids)
+        scores = np.array(self.bm25_search.get_scores(keywords))
+        ids    = np.array(self.bm25_search.doc_ids)
+        if scores.size and top_n:                # keep only top-n if requested
+           idx = scores.argsort()[-top_n:][::-1]
+           return scores[idx], ids[idx]
+        return scores, ids
 
     async def _get_bm25_results_async(self,
                                   keywords     : str,

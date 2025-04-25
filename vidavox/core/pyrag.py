@@ -3,11 +3,12 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional
+from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set
 from dataclasses import dataclass, asdict
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
+from collections import defaultdict
 
 from vidavox.utils.pretty_logger import pretty_json_log
 from vidavox.utils.doc_tracker import compute_checksum
@@ -55,73 +56,145 @@ class Doc:
     meta_data: Dict[str, any]
 
 class DocumentManager:
-    def __init__(self):
+    """
+    Single-engine, multi-tenant document registry with shared documents.
+    • All docs live in one dict -> O(1) lookup by id
+    • user_to_doc_ids keeps a per-tenant index -> O(1) filtering
+    • owner_id is injected into each doc.meta_data for persistence-layer filters
+    • Documents without a specific user_id belong to all users (shared)
+    """
+    def __init__(self) -> None:
         self.documents: Dict[str, Doc] = {}
-        self.lock = threading.Lock()  # for thread safety
+        self.user_to_doc_ids: Dict[str, Set[str]] = defaultdict(set)
+        self.shared_doc_ids: Set[str] = set()  # Tracks documents that belong to all users
+        self.lock = threading.Lock()
 
-    def add_document(self, doc_id: str, text: str, meta_data: Optional[Dict] = None) -> None:
+    # ---------- INGEST ----------
+    def add_document(
+        self,
+        doc_id: str,
+        text: str,
+        meta_data: Optional[Dict] = None,
+        user_id: Optional[str] = None,
+    ) -> None:
+        meta = (meta_data or {}).copy()
+        if user_id is not None:
+            meta["owner_id"] = user_id
+        
         with self.lock:
-            self.documents[doc_id] = Doc(doc_id, text, meta_data or {})
-          
-    
-    def add_documents(self, docs: List[Tuple[str, str, Dict]]) -> None:
+            self.documents[doc_id] = Doc(doc_id, text, meta)
+            if user_id is not None:
+                self.user_to_doc_ids[user_id].add(doc_id)
+            else:
+                self.shared_doc_ids.add(doc_id)
+
+    def add_documents(
+        self,
+        docs: List[Tuple[str, str, Dict]],
+        user_id: Optional[str] = None,
+    ) -> None:
         with self.lock:
-            new_docs = {doc_id: Doc(doc_id, text, meta_data or {}) for doc_id, text, meta_data in docs}
+            # Prepare all documents at once
+            new_docs = {}
+            doc_ids = set()
+            
+            for doc_id, text, meta_data in docs:
+                meta = (meta_data or {}).copy()
+                if user_id is not None:
+                    meta["owner_id"] = user_id
+                new_docs[doc_id] = Doc(doc_id, text, meta)
+                doc_ids.add(doc_id)
+            
+            # Batch update documents dictionary
             self.documents.update(new_docs)
             
-
-    def get_document(self, doc_id: str) -> Optional[str]:
-        with self.lock:
-            doc = self.documents.get(doc_id)
-            if doc:
-                return doc.text
+            # Associate documents with user or mark as shared
+            if user_id is not None:
+                self.user_to_doc_ids[user_id].update(doc_ids)
             else:
-                logger.warning(f"Document ID {doc_id} not found.")
+                self.shared_doc_ids.update(doc_ids)
+
+    # ---------- READ ----------
+    def get_document(self, user_id: str, doc_id: str) -> Optional[str]:
+        """
+        Return text if this user owns the doc or if it's shared.
+        """
+        with self.lock:
+            if doc_id not in self.user_to_doc_ids[user_id] and doc_id not in self.shared_doc_ids:
                 return None
+            return self.documents[doc_id].text
 
-    def get_metadata(self, doc_id: str) -> Optional[Dict]:
+    def get_metadata(self, user_id: str, doc_id: str) -> Optional[Dict]:
         with self.lock:
-            doc = self.documents.get(doc_id)
-            if doc:
-                return doc.meta_data
-            else:
-                logger.warning(f"Document ID {doc_id} not found.")
+            if doc_id not in self.user_to_doc_ids[user_id] and doc_id not in self.shared_doc_ids:
                 return None
+            return self.documents[doc_id].meta_data
 
-    def delete_document(self, doc_id: str) -> bool:
+    def get_user_docs(self, user_id: str) -> List[str]:
+        """Fast O(#docs_user + #shared_docs) listing for query filters."""
         with self.lock:
-            if doc_id in self.documents:
-                del self.documents[doc_id]
-                return True
-            logger.warning(f"Document ID {doc_id} not found.")
-            return False
+            # Return both user-specific and shared documents
+            user_docs = set(self.user_to_doc_ids.get(user_id, set()))
+            return list(user_docs | self.shared_doc_ids)
 
-    def get_document_count(self) -> int:
+    # ---------- DELETE ----------
+    def delete_document(self, doc_id: str, user_id: Optional[str] = None) -> bool:
         with self.lock:
-            return len(self.documents)
+            # Check document exists
+            if doc_id not in self.documents:
+                return False
+                
+            # If user_id provided, check ownership
+            if user_id is not None and doc_id not in self.user_to_doc_ids[user_id] and doc_id not in self.shared_doc_ids:
+                return False
+                
+            # Remove from user's collection if it belongs to a user
+            for uid, docs in self.user_to_doc_ids.items():
+                if doc_id in docs:
+                    docs.remove(doc_id)
+                    
+            # Remove from shared if it's shared
+            self.shared_doc_ids.discard(doc_id)
+            
+            # Remove from main documents dictionary
+            self.documents.pop(doc_id, None)
+            return True
 
-    def get_all_contents(self) -> str:
+    def delete_documents(self, doc_ids: List[str], user_id: Optional[str] = None) -> int:
+        """Batch delete multiple documents, returns count of deleted docs"""
+        deleted_count = 0
         with self.lock:
-            return "\n".join(doc.text for doc in self.documents.values())
+            for doc_id in doc_ids:
+                if self.delete_document(doc_id, user_id):
+                    deleted_count += 1
+            return deleted_count
 
-    def get_content_dict(self) -> Dict[str, List[str]]:
-        # Group texts by file_name; if duplicate names exist, store them in a list.
-        content_dict = {}
+    # ---------- UTIL ----------
+    def clear_user(self, user_id: str) -> None:
         with self.lock:
-            for doc in self.documents.values():
-                file_name = doc.meta_data.get('file_name', 'unknown')
-                content_dict.setdefault(file_name, []).append(doc.text)
-        return content_dict
+            # Get user's document IDs
+            doc_ids = self.user_to_doc_ids.pop(user_id, set())
+            
+            # Delete documents that belong only to this user
+            # (not shared and not belonging to other users)
+            for doc_id in doc_ids:
+                is_used_elsewhere = any(doc_id in docs for uid, docs in self.user_to_doc_ids.items())
+                if not is_used_elsewhere and doc_id not in self.shared_doc_ids:
+                    self.documents.pop(doc_id, None)
 
-    def clear(self) -> None:
+    def doc_count(self, user_id: Optional[str] = None) -> int:
         with self.lock:
-            self.documents.clear()
+            if user_id is None:
+                return len(self.documents)
+            # Return count of user's documents plus shared documents
+            return len(self.user_to_doc_ids.get(user_id, set())) + len(self.shared_doc_ids)
 
-    @property
-    def doc_ids(self) -> List[str]:
-        """Return a **deterministically sorted** list of document IDs."""
+    def doc_ids(self, user_id: Optional[str] = None) -> List[str]:
         with self.lock:
-            return sorted(self.documents.keys())
+            if user_id is None:
+                return sorted(self.documents.keys())
+            # Return both user-specific and shared documents
+            return sorted(set(self.user_to_doc_ids.get(user_id, set())) | self.shared_doc_ids)
 
 
 class FileProcessor:
@@ -258,10 +331,10 @@ class RAG_Engine:
         self.token_counter = TokenCounter()
         self.embedding_model = embedding_model
         
+        # Initialize vector store
         self.vector_store = vector_store
         self.persistence = AsyncPersistence(self.vector_store) if vector_store else None
 
-        
         # Initialize document store
         self.doc_manager = DocumentManager()
 
@@ -275,6 +348,15 @@ class RAG_Engine:
 
         # Results cache
         self.results = []
+
+        # Batch lock
+        self.batch_lock = threading.Lock()
+    
+    def _allowed_ids(self, user_id: str | None) -> list[str] | None:
+        """Return the list of doc_ids this user may see (or None == no filter)."""
+        if user_id is None:
+            return None                     # admin / background tasks
+        return self.doc_manager.get_user_docs(user_id)
     
     async def initialize_vector_store(self):
         """Initialize the vector store."""
@@ -301,7 +383,8 @@ class RAG_Engine:
             
             # Process each row
             for idx, row in df.iterrows():
-                doc_id = f"{file_name}_{idx}"
+                # doc_id = f"{file_name}_{idx}"
+                doc_id = f"{file_name}_chunk{idx}"
                 doc_text = str(row[text_col])
                 doc_checksum = compute_checksum(doc_text)
                 
@@ -352,7 +435,7 @@ class RAG_Engine:
 
             # Process each row
             for idx, row in df.iterrows():
-                doc_id = f"{file_name}_{idx}"
+                doc_id = f"{file_name}_chunk{idx}"
                 doc_text = str(row[text_col])
                 doc_checksum = compute_checksum(doc_text)
 
@@ -413,10 +496,14 @@ class RAG_Engine:
                     pretty_json_log(logger, batch_docs, "batch_docs:")
                 
             logger.info(f"Successfully processed {len(nodes)} chunks from {file_name}")
-            
+        
+        except FileNotFoundError as e:
+            logger.error(f"File not found: {file_path} - {e}")
+        except PermissionError as e:
+            logger.error(f"Permission denied: {file_path} - {e}")
         except Exception as e:
-            logger.error(f"Failed to process file {file_name}: {e}")
-            
+            logger.error(f"Failed to process file {file_path}: {e}")
+                        
         return batch_docs
     
     def from_paths(
@@ -429,7 +516,8 @@ class RAG_Engine:
         load_excel_as_pandas_dataframe: bool = False,
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None,
-        use_recursive:bool=True
+        use_recursive:bool=True,
+        user_id: Optional[str] = None
     ) -> 'RAG_Engine':
         """
         Build engine from a list of file paths, with mixed format support.
@@ -512,7 +600,7 @@ class RAG_Engine:
                 
                 # Process batch if it reaches threshold
                 if len(batch_docs) >= BATCH_SIZE:
-                    self._process_document_batch(batch_docs)
+                    self._process_document_batch(batch_docs, user_id=user_id)
                     batch_docs = []
                     
             except Exception as e:
@@ -522,7 +610,7 @@ class RAG_Engine:
 
         # Process any remaining documents
         if batch_docs:
-            self._process_document_batch(batch_docs)
+            self._process_document_batch(batch_docs, user_id=user_id)
             
         # Log processing summary
         logger.info(
@@ -585,34 +673,36 @@ class RAG_Engine:
   
 
     
-    def _process_document_batch(self, docs: List[Tuple[str, str, Dict]]) -> None:
+    def _process_document_batch(self, docs: List[Tuple[str, str, Dict]], user_id: Optional[str] = None,) -> None:
         """Process a batch of documents efficiently."""
         try:
-            # Extract components for batch processing
-            doc_ids, texts, meta_datas = zip(*docs)
-         
-            
-            # Update document manager
-            self.doc_manager.add_documents(docs)
-            
-            # Update token counter
-            for doc_id, text in zip(doc_ids, texts):
-                self.token_counter.add_document(doc_id, text)
-            
-            # Update search indices in batch
-            self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
-            inserted_vectors = self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)), return_vectors=True)
 
-            logger.info(f"Added {len(doc_ids)} documents to the engine.")
-            if self.persistence:
-                self.persistence.queue_docs(docs)
-                logger.info(f"Persisted {len(doc_ids)} documents to the persistence store.")
-                if inserted_vectors:                       # never None when return_vectors=True
-                    self.persistence.queue_vectors(inserted_vectors)
-                    logger.info(f"Persisted {len(inserted_vectors)} FAISS vectors to the persistence store.")
-                self.persistence.queue_bm25(self.bm25_wrapper.get_multiple_doc_terms(doc_ids))
-                self.persistence.queue_token_counts([(d, len(t.split())) for d, t in zip(doc_ids, texts)])
-                # asyncio.run(self.persistence.flush())      # or  asyncio.run(self.persistence.flush())
+            with self.batch_lock:
+                # Extract components for batch processing
+                doc_ids, texts, meta_datas = zip(*docs)
+            
+                
+                # Update document manager
+                self.doc_manager.add_documents(docs, user_id=user_id)
+                
+                # Update token counter
+                for doc_id, text in zip(doc_ids, texts):
+                    self.token_counter.add_document(doc_id, text)
+                
+                # Update search indices in batch
+                self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
+                inserted_vectors = self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)), return_vectors=True)
+
+                logger.info(f"Added {len(doc_ids)} documents to the engine.")
+                if self.persistence:
+                    self.persistence.queue_docs(docs)
+                    logger.info(f"Persisted {len(doc_ids)} documents to the persistence store.")
+                    if inserted_vectors:                       # never None when return_vectors=True
+                        self.persistence.queue_vectors(inserted_vectors)
+                        logger.info(f"Persisted {len(inserted_vectors)} FAISS vectors to the persistence store.")
+                    self.persistence.queue_bm25(self.bm25_wrapper.get_multiple_doc_terms(doc_ids))
+                    self.persistence.queue_token_counts([(d, len(t.split())) for d, t in zip(doc_ids, texts)])
+                
 
 
         except Exception as e:
@@ -669,31 +759,30 @@ class RAG_Engine:
             self.persistence.queue_vectors(vecs)
             await self.persistence.flush_async()
     
-    def delete_document(self, doc_id: str) -> bool:
+    def delete_document(self, doc_id: str, user_id: str = None) -> bool:
         """Remove a document from the engine."""
         try:
-            # Find the document index
-            if doc_id not in self.doc_manager.doc_ids:
-                logger.warning(f"Document ID {doc_id} not found.")
+            # Ensure the doc exists in the manager
+            if doc_id not in self.doc_manager.get_user_docs(user_id):
+                logger.warning(f"Document ID {doc_id} not found in user {user_id}.")
                 return False
-                
-            index = self.doc_manager.doc_ids.index(doc_id)
             
-            # Remove from search indices
-            self.bm25_wrapper.remove_document(index)
-            self.faiss_wrapper.remove_document(index)
+            # Remove from search indices (by doc_id, not index)
+            self.bm25_wrapper.remove_document(doc_id)
+            self.faiss_wrapper.remove_document(doc_id)
             
             # Remove from token counter
             self.token_counter.remove_document(doc_id)
             
             # Remove from document manager
-            self.doc_manager.delete_document(doc_id)
+            self.doc_manager.delete_document(doc_id, user_id)
             
             return True
-            
+
         except Exception as e:
             logger.error(f"Error deleting document {doc_id}: {e}")
             return False
+
         
     async def delete_document_async(self, doc_id: str) -> bool:
         if doc_id not in self.doc_manager.doc_ids:
@@ -730,15 +819,21 @@ class RAG_Engine:
             return self.retrieve(query_text, keywords, threshold, top_k, result_formatter=result_formatter, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
     
     def retrieve(self, query_text: str, keywords: Optional[List[str]] = None,
-                threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Dict]:
+                threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,
+                prefixes=None, include_doc_ids=None, exclude_doc_ids=None,  max_results_size: int = 1000, user_id: Optional[str] = None) -> List[Dict]:
         """Synchronously retrieve relevant documents."""
-        results = self.search(query_text, keywords, top_k, threshold, prefixes, include_doc_ids, exclude_doc_ids)
+         # Apply reasonable limits to prevent resource exhaustion
+        capped_top_k = min(top_k, max_results_size)
+        results = self.search(query_text, keywords, capped_top_k, threshold, prefixes, include_doc_ids, exclude_doc_ids, user_id=user_id)
         return self._process_search_results(results, result_formatter=result_formatter)
     
     async def retrieve_async(self, query_text: str, keywords: Optional[List[str]] = None,
-                           threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Dict]:
+                           threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,
+                           prefixes=None, include_doc_ids=None, exclude_doc_ids=None, max_results_size: int = 1000, user_id: Optional[str] = None) -> List[Dict]:
         """Asynchronously retrieve relevant documents."""
-        results = await self.search_async(query_text, keywords, top_k, threshold, prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
+        # Apply reasonable limits to prevent resource exhaustion
+        capped_top_k = min(top_k, max_results_size)
+        results = await self.search_async(query_text, keywords,capped_top_k, threshold, prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids, user_id=user_id)
         return self._process_search_results(results, result_formatter=result_formatter)
     
     def retrieve_best_chunk_per_document(
@@ -752,7 +847,8 @@ class RAG_Engine:
         search_mode: Optional[SearchMode] = SearchMode.HYBRID,
         sort_globally: Optional[bool] = False,
         include_doc_ids: Optional[List[str]] = None,
-        exclude_doc_ids: Optional[List[str]] = None
+        exclude_doc_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None
     ) -> List[Dict]:
         """
         Retrieve the best matching chunks per document for a given query.
@@ -773,6 +869,8 @@ class RAG_Engine:
         Returns:
             List[Dict]: A list of formatted search results.
         """
+        if user_id is not None:
+            include_doc_ids = self._allowed_ids(user_id)
         # Retrieve candidate chunks grouped by document.
         candidate_results = self.search_best_chunk_per_document(
             query_text, keywords, per_doc_top_n=per_doc_top_n,
@@ -798,38 +896,45 @@ class RAG_Engine:
           # Use the provided formatter or fall back to the default
         formatter = result_formatter or DefaultResultFormatter()
         
-        for doc_id, score in results:
-            if doc_id in seen_docs or doc_id not in self.doc_manager.documents:
-                continue
-                
-            seen_docs.add(doc_id)
+         # Process results in batches for large result sets
+        batch_size = 50
+        for batch_idx in range(0, len(results), batch_size):
+            batch = results[batch_idx:batch_idx + batch_size]
             
-            try:
-                # Directly access the Document object from the dictionary
-                doc_obj = self.doc_manager.documents[doc_id]
-                self.results.append(doc_obj.text)
+            for doc_id, score in batch:
+                if doc_id in seen_docs or doc_id not in self.doc_manager.documents:
+                    continue
                 
-                # Create a SearchResult instance
-                search_result = SearchResult(
-                    doc_id=doc_id,
-                    text=doc_obj.text,
-                    meta_data=doc_obj.meta_data,
-                    score=score
-                )
-                # Format the result using the formatter
-                formatted_result = formatter.format(search_result)
-               
-                retrieved_docs.append(formatted_result)
+                seen_docs.add(doc_id)
+                
+                try:
+                    # Directly access the Document object from the dictionary
+                    doc_obj = self.doc_manager.documents[doc_id]
+                    self.results.append(doc_obj.text)
+                    
+                    # Create a SearchResult instance
+                    search_result = SearchResult(
+                        doc_id=doc_id,
+                        text=doc_obj.text,
+                        meta_data=doc_obj.meta_data,
+                        score=score
+                    )
+                    # Format the result using the formatter
+                    formatted_result = formatter.format(search_result)
+                
+                    retrieved_docs.append(formatted_result)
 
 
-                
-            except (ValueError, IndexError) as e:
-                logger.error(f"Error processing result for doc_id {doc_id}: {e}")
+                    
+                except (ValueError, IndexError) as e:
+                    logger.error(f"Error processing result for doc_id {doc_id}: {e}")
         
         return retrieved_docs if retrieved_docs else [{"id": "None.", "url": "None.", "text": None}]
     
 
-    def search_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False, include_doc_ids=None, exclude_doc_ids=None):
+    def search_best_chunk_per_document(self, query_text, keywords, per_doc_top_n=5, threshold=0.53, prefixes=None, 
+                                       search_mode: Optional[SearchMode] = SearchMode.HYBRID, sort_globally: Optional[bool]= False, 
+                                       include_doc_ids=None, exclude_doc_ids=None, user_id: Optional[str] = None):
         """
         Perform an advanced search and return the top 'per_doc_top_n' chunks per document.
         Assumes that the doc_id is structured as: fileName_timestamp_chunk{idx}.
@@ -846,6 +951,9 @@ class RAG_Engine:
         """
         # Retrieve a large candidate pool by setting top_n high.
         # (You may adjust this number based on your collection size.)
+        if user_id is not None:
+            include_doc_ids = self._allowed_ids(user_id)
+            
         candidate_results = self.hybrid_search.advanced_search(query_text, keywords, top_n=1000, threshold=threshold, search_mode = search_mode, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
    
         
@@ -875,8 +983,11 @@ class RAG_Engine:
     
     
     def search(self, query_text: str, keywords: Optional[List[str]] = None,
-              top_k: int = 5, threshold: float = 0.4, prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Tuple[str, float]]:
+              top_k: int = 5, threshold: float = 0.4, prefixes=None, include_doc_ids=None, exclude_doc_ids=None, user_id: Optional[str] = None) -> List[Tuple[str, float]]:
         """Perform synchronous search."""
+        if user_id:
+            include_doc_ids = self._allowed_ids(user_id)
+            logger.info(f"Include doc_ids: {include_doc_ids} for user {user_id}")
         try:
             return self.hybrid_search.advanced_search(
                 query_text,
@@ -892,8 +1003,10 @@ class RAG_Engine:
             return []
     
     async def search_async(self, query_text: str, keywords: Optional[List[str]] = None,
-                         top_k: int = 5, threshold: float = 0.4, prefixes=None, include_doc_ids=None, exclude_doc_ids=None) -> List[Tuple[str, float]]:
+                         top_k: int = 5, threshold: float = 0.4, prefixes=None, include_doc_ids=None, exclude_doc_ids=None, user_id: Optional[str] = None) -> List[Tuple[str, float]]:
         """Perform asynchronous search."""
+        if user_id is not None:
+            include_doc_ids = self._allowed_ids(user_id)
         try:
             return await self.hybrid_search.advanced_search_async(
                 query_text, keywords=keywords, top_n=top_k, threshold=threshold, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids
@@ -923,7 +1036,9 @@ class RAG_Engine:
         return "\n".join(self.results)
     
     def save_state(self, path: str) -> bool:
-        """Save the engine state to disk."""
+        """
+        Save engine state to disk, including each doc’s owner_id in its metadata.
+        """
         state_manager = StateManager()
         state_data = {
             "embedding_model": self.embedding_model,
@@ -934,36 +1049,50 @@ class RAG_Engine:
             "token_counts": dict(self.token_counter.doc_tokens),
         }
         return state_manager.save_state(path, state_data)
-    
-    def load_state(self, path: str) -> bool:
+
+    def load_state(self, path: str, verbose: bool = False) -> bool:
+        """
+        Load engine state, restoring both shared docs and per-user docs.
+        Uses meta["owner_id"] to re-populate DocumentManager.user_to_doc_ids
+        and shared_doc_ids correctly.
+        """
         state_manager = StateManager()
         state_data = state_manager.load_state(path)
+        
+        if verbose:
+            pretty_json_log(logger, state_data, "state_data:")
+
         if not state_data:
             logger.info("No previous state found, initializing fresh state.")
             return False
 
         try:
-            # 1) restore docs in memory
-            docs = [
-                (doc_id, text, meta)
-                for doc_id, (text, meta) in state_data["documents"].items()
-            ]
-            self.doc_manager.clear()
-            self.doc_manager.add_documents(docs)
+            # 1) Fully reset the document manager so its indices start empty
+            self.doc_manager = DocumentManager()
 
-            # 2) restore token counts
+            # 2) Re-add each doc with its original owner_id (if any)
+            for doc_id, (text, meta) in state_data["documents"].items():
+                owner = meta.get("owner_id")  # None ⇒ shared
+                self.doc_manager.add_document(
+                    doc_id=doc_id,
+                    text=text,
+                    meta_data=meta,
+                    user_id=owner
+                )
+
+            # 3) Restore token counts
             self.token_counter.doc_tokens = state_data.get("token_counts", {})
             self.token_counter.total_tokens = sum(self.token_counter.doc_tokens.values())
 
-            # 3) warn on model mismatch
-            stored = state_data.get("embedding_model")
-            if stored and stored != self.embedding_model:
+            # 4) Warn if the embedding_model has changed
+            stored_model = state_data.get("embedding_model")
+            if stored_model and stored_model != self.embedding_model:
                 logger.warning(
                     "State was saved with model %s, current engine uses %s",
-                    stored, self.embedding_model,
+                    stored_model, self.embedding_model,
                 )
 
-            # 4) rebuild indices in one batch
+            # 5) Rebuild indices in one batch
             batch = [(doc_id, text) for doc_id, (text, _) in state_data["documents"].items()]
             self.bm25_wrapper.clear_documents()
             self.faiss_wrapper.clear_documents()
@@ -981,6 +1110,7 @@ class RAG_Engine:
             logger.error(f"Failed to restore state: {e}")
             self._reset_state()
             return False
+
     def _reset_state(self) -> None:
         """Reset the engine to initial state."""
         self.doc_manager = DocumentManager()
