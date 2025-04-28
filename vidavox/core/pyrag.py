@@ -136,6 +136,31 @@ class DocumentManager:
             # Return both user-specific and shared documents
             user_docs = set(self.user_to_doc_ids.get(user_id, set()))
             return list(user_docs | self.shared_doc_ids)
+    
+    def get_all_documents(self) -> List[Doc]:
+        """
+        Return a list of every Doc in the registry (shared + per‐user).
+        """
+        with self.lock:
+            # .values() is O(n) in number of docs
+            return list(self.documents.values())
+
+    def get_all_documents_by_user(self) -> Dict[Optional[str], List[Doc]]:
+        """
+        Return a mapping from user_id to that user’s Docs,
+        plus key None for shared-only docs.
+        """
+        with self.lock:
+            result: Dict[Optional[str], List[Doc]] = {}
+
+            # per‐user docs
+            for uid, doc_ids in self.user_to_doc_ids.items():
+                result[uid] = [self.documents[d] for d in doc_ids]
+
+            # shared docs (no owner)
+            result[None] = [self.documents[d] for d in self.shared_doc_ids]
+
+            return result
 
     # ---------- DELETE ----------
     def _delete_document_nolock(self, doc_id: str, user_id: Optional[str] = None) -> bool:
