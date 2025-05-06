@@ -451,13 +451,21 @@ class FAISS_search:
         Rebuilds the FAISS index from the current documents.
         """
         with self.lock:
+            if not self.doc_dict:                       # <- NEW guard
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension)
+                )
+                logger.info("FAISS index emptied (0 documents left).")
+                return
             all_doc_ids = list(self.doc_dict.keys())
             all_texts = [self.doc_dict[d] for d in all_doc_ids]
+
             # Reassign integer IDs continuously
             self.id_map = {}
             self.reverse_id_map = {}
             new_ids = []
             self.next_index_id = 0
+
             for doc_id in all_doc_ids:
                 self.id_map[doc_id] = self.next_index_id
                 self.reverse_id_map[self.next_index_id] = doc_id
@@ -468,46 +476,71 @@ class FAISS_search:
             except Exception as e:
                 raise RuntimeError(f"Failed to rebuild embeddings: {str(e)}")
             # Reinitialize and rebuild the FAISS index
-            self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
-            self.index.add_with_ids(embeddings, np.array(new_ids).astype('int64'))
+            with self.lock:
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension)
+                )
+                if embeddings.size:                         # skip if empty
+                    self.index.add_with_ids(
+                        embeddings,
+                        np.array(new_ids, dtype="int64")
+                    )
+            logger.info("FAISS index rebuilt (documents left: %d)", len(all_doc_ids))
             
+    # ---------- asynchronous ----------
     async def _async_rebuild_index(self) -> None:
         """
-        Asynchronously rebuilds the FAISS index from the current documents.
+        Asynchronously rebuild the FAISS index.
+        Works the same as the sync version but off‑loads CPU work to threads.
         """
+        # ----- 1. Snapshot under lock -----
         with self.lock:
+            if not self.doc_dict:
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension)
+                )
+                logger.info("FAISS index emptied (0 documents left).")
+                return
+
             all_doc_ids = list(self.doc_dict.keys())
-            all_texts = [self.doc_dict[d] for d in all_doc_ids]
-            # Reassign integer IDs continuously
-            self.id_map = {}
-            self.reverse_id_map = {}
-            new_ids = []
-            self.next_index_id = 0
+            all_texts   = [self.doc_dict[d] for d in all_doc_ids]
+
+            # Reassign contiguous integer IDs
+            self.id_map          = {}
+            self.reverse_id_map  = {}
+            new_ids              = []
+            self.next_index_id   = 0
             for doc_id in all_doc_ids:
-                self.id_map[doc_id] = self.next_index_id
+                self.id_map[doc_id]                = self.next_index_id
                 self.reverse_id_map[self.next_index_id] = doc_id
                 new_ids.append(self.next_index_id)
                 self.next_index_id += 1
-        
+
+        # ----- 2. Heavy work off‑thread -----
         try:
-            # Asynchronously generate embeddings
             embeddings = await asyncio.to_thread(
                 self.embedding_model.encode,
                 all_texts,
                 convert_to_numpy=True
             )
-            embeddings = embeddings.astype('float32')
-            
-            # Create new index and add embeddings
-            with self.lock:
-                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+            embeddings = embeddings.astype("float32")
+        except Exception as e:
+            raise RuntimeError(f"Failed to rebuild embeddings asynchronously: {e!s}")
+
+        # ----- 3. Build the new index -----
+        with self.lock:
+            self.index = faiss.IndexIDMap(
+                faiss.IndexFlatL2(self.dimension)
+            )
+            if embeddings.size:
                 await asyncio.to_thread(
                     self.index.add_with_ids,
                     embeddings,
-                    np.array(new_ids).astype('int64')
+                    np.array(new_ids, dtype="int64")
                 )
-        except Exception as e:
-            raise RuntimeError(f"Failed to rebuild embeddings asynchronously: {str(e)}")
+
+        logger.info("FAISS index rebuilt asynchronously (documents left: %d)", len(all_doc_ids))
+
 
     def search(self, query: str, k: int, id_filter: Optional[IDFilter] = None) -> Tuple[np.ndarray, List[str]]:
         """
