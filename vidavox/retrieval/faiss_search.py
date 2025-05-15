@@ -6,6 +6,8 @@ import logging
 import faiss
 import numpy as np
 
+from vidavox.utils.script_tracker import log_processing_time
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -299,6 +301,7 @@ class FAISS_search:
         """
         await self.add_documents_async([(doc_id, doc)])
 
+    @log_processing_time
     def add_documents(self, docs_with_ids: List[Tuple[str, str]], return_vectors: bool = False) -> None:
         """
         Efficiently adds multiple documents to the FAISS index and updates internal structures.
