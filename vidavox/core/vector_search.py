@@ -4,8 +4,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set          # NEW
-from collections.abc import Iterable                                       # NEW
+from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set, Sequence      
+from collections.abc import Iterable                                       
 from dataclasses import dataclass, asdict
 from starlette.concurrency import run_in_threadpool
 import numpy as np
