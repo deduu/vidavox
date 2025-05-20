@@ -4,8 +4,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set
-from typing import Union, Sequence, Optional, List, Callable                # NEW
+from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set          # NEW
 from collections.abc import Iterable                                       # NEW
 from dataclasses import dataclass, asdict
 from starlette.concurrency import run_in_threadpool
@@ -791,10 +790,20 @@ class Retrieval_Engine:
                 # Update token counter
                 for doc_id, text in zip(doc_ids, texts):
                     self.token_counter.add_document(doc_id, text, user_id=user_id)
-                
-                # Update search indices in batch
-                self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
-                inserted_vectors = self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)), return_vectors=True)
+     
+                    # --------------- CPU‑bound indexing off the event loop -----------
+ 
+                async def _index():
+                    # BM25 is pure‑python but fast; FAISS is the expensive bit.
+                    self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
+                    inserted = self.faiss_wrapper.add_documents(
+                        list(zip(doc_ids, texts)), return_vectors=True
+                    )
+                    return inserted
+
+                inserted_vectors = asyncio.run(
+                    run_in_threadpool(_index)        # one thread‑pool hop
+                )
 
 
                 logger.info(f"Added {len(doc_ids)} documents to the engine for {user_id}")
@@ -1207,8 +1216,19 @@ class Retrieval_Engine:
             self.bm25_wrapper.clear_documents()
             self.faiss_wrapper.clear_documents()
             if batch:
-                self.bm25_wrapper.add_documents(batch)
-                self.faiss_wrapper.add_documents(batch)
+                # self.bm25_wrapper.add_documents(batch)
+                # self.faiss_wrapper.add_documents(batch)
+                async def _index():
+                    # BM25 is pure‑python but fast; FAISS is the expensive bit.
+                    self.bm25_wrapper.add_documents(batch)
+                    inserted = self.faiss_wrapper.add_documents(
+                        batch, return_vectors=True
+                    )
+                    return inserted
+
+                inserted_vectors = asyncio.run(
+                    run_in_threadpool(_index)        # one thread‑pool hop
+                )
 
             logger.info(
                 "Loaded state: %d documents rebuilt into BM25 & FAISS",
