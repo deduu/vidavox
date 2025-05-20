@@ -1,10 +1,13 @@
 # Core components module (rag_components.py)
 import logging
 import threading
+import platform
 import time
+import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set
+from typing import List, Dict, Any, Optional, Tuple, Callable, Sequence, Union, Optional, Set
 from dataclasses import dataclass, asdict
+from starlette.concurrency import run_in_threadpool
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
@@ -12,11 +15,20 @@ from collections import defaultdict
 
 from vidavox.utils.pretty_logger import pretty_json_log
 from vidavox.utils.doc_tracker import compute_checksum
+from vidavox.utils.script_tracker import log_processing_time
 from vidavox.retrieval.persistence_search import AsyncPersistence
 
+
+
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig()
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DocItem:
+    path: str          # full file system path
+    db_id: str | None  # UUID we got back from upload_files
 
 @dataclass
 class SearchResult:
@@ -36,7 +48,6 @@ class CustomResultFormatter(BaseResultFormatter):
         return {
             "doc_id": result.doc_id,
             "page_content": result.text,
-   
             "relevance": result.score,
         }
 class DefaultResultFormatter(BaseResultFormatter):
@@ -46,6 +57,7 @@ class DefaultResultFormatter(BaseResultFormatter):
             "id": result.doc_id,
             "url": result.meta_data.get('source', 'unknown_url'),
             "text": result.text,
+            "page": result.meta_data.get('page', 'unknown'),
             "score": result.score,
         }
 
@@ -68,6 +80,7 @@ class DocumentManager:
         self.user_to_doc_ids: Dict[str, Set[str]] = defaultdict(set)
         self.shared_doc_ids: Set[str] = set()  # Tracks documents that belong to all users
         self.lock = threading.RLock()
+        self._just_added: Dict[Optional[str], List[str]] = defaultdict(list)
 
     # ---------- INGEST ----------
     def add_document(
@@ -88,6 +101,8 @@ class DocumentManager:
             else:
                 self.shared_doc_ids.add(doc_id)
 
+            self._just_added[user_id].append(doc_id)
+
     def add_documents(
         self,
         docs: List[Tuple[str, str, Dict]],
@@ -97,22 +112,26 @@ class DocumentManager:
             # Prepare all documents at once
             new_docs = {}
             doc_ids = set()
+            newly_added_ids = []
             
             for doc_id, text, meta_data in docs:
                 meta = (meta_data or {}).copy()
                 if user_id is not None:
                     meta["owner_id"] = user_id
                 new_docs[doc_id] = Doc(doc_id, text, meta)
-                doc_ids.add(doc_id)
+                # doc_ids.add(doc_id)
+                newly_added_ids.append(doc_id)
             
             # Batch update documents dictionary
             self.documents.update(new_docs)
             
             # Associate documents with user or mark as shared
             if user_id is not None:
-                self.user_to_doc_ids[user_id].update(doc_ids)
+                self.user_to_doc_ids[user_id].update(newly_added_ids)
             else:
-                self.shared_doc_ids.update(doc_ids)
+                self.shared_doc_ids.update(newly_added_ids)
+            
+            self._just_added[user_id].extend(newly_added_ids)
 
     # ---------- READ ----------
     def get_document(self, user_id: str, doc_id: str) -> Optional[str]:
@@ -143,7 +162,27 @@ class DocumentManager:
         """
         with self.lock:
             # .values() is O(n) in number of docs
-            return list(self.documents.values())
+            return {doc_id: doc.text for doc_id, doc in self.documents.items()}
+    
+    def get_all_just_added_documents(
+        self,
+        user_id: Optional[str],
+        clear_after: bool = True
+    ) -> Dict[str, str]:
+        """
+        Return a map of doc_id -> text for everything that was
+        added *since the last time you called this method* (for this user_id).
+        If clear_after=True (default), empties the buffer.
+        """
+        with self.lock:
+            just_ids = list(self._just_added.get(user_id, []))
+            result = {doc_id: self.documents[doc_id].text for doc_id in just_ids}
+            if clear_after:
+                self._just_added[user_id].clear()
+            return result
+
+    
+
 
     def get_all_documents_by_user(self) -> Dict[Optional[str], List[Doc]]:
         """
@@ -234,11 +273,19 @@ class FileProcessor:
         """Extract basic metadata from a file."""
         try:
             stat = file_path.stat()
+            # Cross-platform creation time handling
+            if hasattr(stat, "st_birthtime"):
+                creation_time = time.ctime(stat.st_birthtime)
+            elif platform.system() == "Windows":
+                creation_time = time.ctime(stat.st_ctime)  # Windows: st_ctime is creation time
+            else:
+                creation_time = "Unavailable"  # Linux has no creation time
+
             return {
                 "file_path": str(file_path),
                 "file_name": file_path.name,
                 "file_size": stat.st_size,
-                "creation_time": time.ctime(stat.st_birthtime),
+                "creation_time": creation_time,
                 "modification_time": time.ctime(stat.st_mtime),
             }
         except Exception as e:
@@ -377,6 +424,7 @@ class RAG_Engine:
 
         # Results cache
         self.results = []
+        self.toAdd = []
 
         # New: file → last seen mtime
         self._file_mtime_index: Dict[str, str] = {}
@@ -418,7 +466,8 @@ class RAG_Engine:
             # Process each row
             for idx, row in df.iterrows():
                 # doc_id = f"{file_name}_{idx}"
-                doc_id = f"{file_name}_chunk{idx}"
+                file_processing_uuid = str(uuid.uuid4())
+                doc_id = f"{file_name}_{file_processing_uuid}_chunk{idx}"
                 doc_text = str(row[text_col])
                 doc_checksum = compute_checksum(doc_text)
                 
@@ -469,7 +518,8 @@ class RAG_Engine:
 
             # Process each row
             for idx, row in df.iterrows():
-                doc_id = f"{file_name}_chunk{idx}"
+                file_processing_uuid = str(uuid.uuid4())
+                doc_id = f"{file_name}_{file_processing_uuid}_chunk{idx}"
                 doc_text = str(row[text_col])
                 doc_checksum = compute_checksum(doc_text)
 
@@ -502,11 +552,13 @@ class RAG_Engine:
 
 
     def _process_file(
-    self,
-    file_path: str,
-    config: ProcessingConfig,
-    chunker: Optional[Callable] = None,
-    use_recursive: bool = True
+        self,
+        file_path: str,
+        config: ProcessingConfig,
+        chunker: Optional[Callable] = None,
+        use_recursive: bool = True,
+        *,                             # <‑‑ makes the next arg keyword‑only
+        file_db_id: str | None = None  # <‑‑ NEW
         ) -> List[Tuple[str, str, Dict]]:
         processor = FileProcessor()
         file_name = os.path.basename(file_path)
@@ -522,11 +574,17 @@ class RAG_Engine:
 
         batch_docs: List[Tuple[str, str, Dict]] = []
         try:
+            
             nodes = DocumentSplitter(config, use_recursive=use_recursive).run(file_path, chunker)
             self.nodes = nodes
 
             for idx, doc in enumerate(nodes):
-                doc_id = f"{file_name}_chunk{idx}"
+                file_processing_uuid = str(uuid.uuid4())
+                if file_db_id is not None:
+                    doc_id = f"{file_db_id}_{file_name}_chunk{idx}"
+                else:
+                    doc_id = f"{file_name}_{file_processing_uuid}_chunk{idx}"
+
                 meta   = dict(base_meta)  # copy
                 meta["file_type"] = Path(file_path).suffix.lower().lstrip(".")
                 combined_meta     = {**meta, **doc.metadata}
@@ -541,10 +599,11 @@ class RAG_Engine:
 
         return batch_docs
 
-    
+    @log_processing_time
     def from_paths(
         self,
-        sources: List[str],
+         sources: Sequence[Union[str, DocItem]],                # <-- was List[str] sources
+        *,
         config: Optional[ProcessingConfig] = None,
         chunker: Optional[Callable] = None,
         show_progress: bool = False,
@@ -553,7 +612,7 @@ class RAG_Engine:
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None,
         use_recursive:bool=True,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = "User A"
     ) -> 'RAG_Engine':
         """
         Build engine from a list of file paths, with mixed format support.
@@ -593,7 +652,9 @@ class RAG_Engine:
         }
         
         # Process files
-        for file_path in iterator:
+        for doc in iterator:
+            file_path = doc.path
+            file_db_id = doc.db_id 
             try:
                 is_csv = file_path.lower().endswith('.csv')
                 is_excel = file_path.lower().endswith('.xlsx') or file_path.lower().endswith('.xls')
@@ -623,7 +684,7 @@ class RAG_Engine:
 
                 # 3) Other file types
                 else:
-                    file_docs = self._process_file(file_path, config, chunker, use_recursive)
+                    file_docs = self._process_file(file_path, config, chunker, use_recursive, file_db_id=file_db_id)
                     if file_docs:
                         stats['other_files_processed'] += 1
                 
@@ -706,10 +767,9 @@ class RAG_Engine:
             metadata_cols=metadata_cols,
             use_recursive=use_recursive
         )
-  
 
-    
-    def _process_document_batch(self, docs: List[Tuple[str, str, Dict]], user_id: Optional[str] = None,) -> None:
+    @log_processing_time
+    def _process_document_batch(self, docs: List[Tuple[str, str, Dict]], user_id: Optional[str] = "User A",) -> None:
         """Process a batch of documents efficiently."""
         try:
 
@@ -725,11 +785,21 @@ class RAG_Engine:
                 for doc_id, text in zip(doc_ids, texts):
                     self.token_counter.add_document(doc_id, text, user_id=user_id)
                 
-                # Update search indices in batch
-                self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
-                inserted_vectors = self.faiss_wrapper.add_documents(list(zip(doc_ids, texts)), return_vectors=True)
+                # --------------- CPU‑bound indexing off the event loop -----------
+ 
+                async def _index():
+                    # BM25 is pure‑python but fast; FAISS is the expensive bit.
+                    self.bm25_wrapper.add_documents(list(zip(doc_ids, texts)))
+                    inserted = self.faiss_wrapper.add_documents(
+                        list(zip(doc_ids, texts)), return_vectors=True
+                    )
+                    return inserted
 
-                logger.info(f"Added {len(doc_ids)} documents to the engine.")
+                inserted_vectors = asyncio.run(
+                    run_in_threadpool(_index)        # one thread‑pool hop
+                )
+
+                logger.info(f"Added {len(doc_ids)} documents to the engine for {user_id}")
                 if self.persistence:
                     self.persistence.queue_docs(docs)
                     logger.info(f"Persisted {len(doc_ids)} documents to the persistence store.")
@@ -870,10 +940,22 @@ class RAG_Engine:
         else:
             return self.retrieve(query_text, keywords, threshold, top_k, result_formatter=result_formatter, prefixes=prefixes, include_doc_ids=include_doc_ids, exclude_doc_ids=exclude_doc_ids)
     
-    def retrieve(self, query_text: str, keywords: Optional[List[str]] = None,
-                threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,
-                prefixes=None, include_doc_ids=None, exclude_doc_ids=None,  max_results_size: int = 1000, user_id: Optional[str] = None) -> List[Dict]:
+    def retrieve(
+        self, 
+        query_text: str, 
+        keywords: Optional[List[str]] = None,
+        threshold: float = 0.4, 
+        top_k: int = 5, 
+        result_formatter: Optional[BaseResultFormatter] = None,
+        prefixes=None, 
+        include_doc_ids=None, 
+        exclude_doc_ids=None,  
+        max_results_size: int = 1000, 
+        user_id: Optional[str] = None
+    ) -> List[Dict]:
         """Synchronously retrieve relevant documents."""
+        if user_id is not None:
+            include_doc_ids = self._allowed_ids(user_id)
          # Apply reasonable limits to prevent resource exhaustion
         capped_top_k = min(top_k, max_results_size)
         results = self.search(query_text, keywords, capped_top_k, threshold, prefixes, include_doc_ids, exclude_doc_ids, user_id=user_id)
@@ -1134,9 +1216,24 @@ class RAG_Engine:
             batch = [(doc_id, text) for doc_id, (text, _) in state_data["documents"].items()]
             self.bm25_wrapper.clear_documents()
             self.faiss_wrapper.clear_documents()
+
+           
             if batch:
-                self.bm25_wrapper.add_documents(batch)
-                self.faiss_wrapper.add_documents(batch)
+                # self.bm25_wrapper.add_documents(batch)
+                # self.faiss_wrapper.add_documents(batch)
+                 # --------------- CPU‑bound indexing off the event loop -----------
+
+                async def _index():
+                    # BM25 is pure‑python but fast; FAISS is the expensive bit.
+                    self.bm25_wrapper.add_documents(batch)
+                    inserted = self.faiss_wrapper.add_documents(
+                        batch, return_vectors=True
+                    )
+                    return inserted
+
+                inserted_vectors = asyncio.run(
+                    run_in_threadpool(_index)        # one thread‑pool hop
+                )
 
             logger.info(
                 "Loaded state: %d documents rebuilt into BM25 & FAISS",
