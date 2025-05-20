@@ -135,6 +135,7 @@ yarl = "1.18.3"
 zstandard = "0.23.0"
 nvitop = "^1.4.2"
 rapidocr-onnxruntime = "^1.4.4"
+starlette = "^0.46.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
