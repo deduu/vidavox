@@ -2,6 +2,7 @@
 import logging
 import threading
 import time
+import platform
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set, Sequence      
@@ -271,11 +272,19 @@ class FileProcessor:
         """Extract basic metadata from a file."""
         try:
             stat = file_path.stat()
+             # Cross-platform creation time handling
+            if hasattr(stat, "st_birthtime"):
+                creation_time = time.ctime(stat.st_birthtime)
+            elif platform.system() == "Windows":
+                creation_time = time.ctime(stat.st_ctime)  # Windows: st_ctime is creation time
+            else:
+                creation_time = "Unavailable"  # Linux has no creation time
+
             return {
                 "file_path": str(file_path),
                 "file_name": file_path.name,
                 "file_size": stat.st_size,
-                "creation_time": time.ctime(stat.st_birthtime),
+                "creation_time": creation_time,
                 "modification_time": time.ctime(stat.st_mtime),
             }
         except Exception as e:
