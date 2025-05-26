@@ -16,7 +16,7 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.11,<3.13"
 numpy = "1.26.4"
 scikit-learn = "1.6.1"
 langchain = "==0.3.17"
