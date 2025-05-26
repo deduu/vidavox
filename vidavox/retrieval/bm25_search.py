@@ -18,7 +18,7 @@ def download_nltk_resources():
         try:
             nltk.download(resource, quiet=True)
         except Exception as e:
-            print(f"Error downloading {resource}: {str(e)}")
+            logger.info(f"Error downloading {resource}: {str(e)}")
 
 
 # Configure logging
@@ -125,12 +125,12 @@ class BM25_search:
         """
 
         if not docs_with_ids:
-            print("No documents provided.")
+            logger.info("No documents provided.")
             return
         with self.lock:
             for doc_id, doc in docs_with_ids:
                 if not isinstance(doc, str) or not isinstance(doc_id, str):
-                    print(f"Skipping invalid document or ID: {doc_id}")
+                    logger.info(f"Skipping invalid document or ID: {doc_id}")
                     continue
                 tokenized = self.preprocess(doc)
                 self.doc_dict[doc_id] = {"text": doc, "tokenized": tokenized}
@@ -145,13 +145,13 @@ class BM25_search:
         - docs_with_ids (List[Tuple[str, str]]): List of (doc_id, document) tuples to add.
         """
         if not docs_with_ids:
-            print("No documents provided.")
+            logger.info("No documents provided.")
             return
             
         # Preprocess documents in parallel
         async def process_doc(doc_id, doc):
             if not isinstance(doc, str) or not isinstance(doc_id, str):
-                print(f"Skipping invalid document or ID: {doc_id}")
+                logger.info(f"Skipping invalid document or ID: {doc_id}")
                 return None
             tokenized = await self.async_preprocess(doc)
             return doc_id, doc, tokenized
@@ -173,10 +173,10 @@ class BM25_search:
                 del self.doc_dict[doc_id]
                 self.doc_ids = list(self.doc_dict.keys())
                 self.update_bm25()
-                print(f"Removed document ID: {doc_id}")
+                logger.info(f"Removed document ID: {doc_id}")
                 return True
             else:
-                print(f"Document ID {doc_id} not found.")
+                logger.info(f"Document ID {doc_id} not found.")
                 return False
                 
     async def async_remove_document(self, doc_id: str) -> bool:
@@ -194,10 +194,10 @@ class BM25_search:
                 del self.doc_dict[doc_id]
                 self.doc_ids = list(self.doc_dict.keys())
                 await asyncio.to_thread(self.update_bm25)
-                print(f"Removed document ID: {doc_id}")
+                logger.info(f"Removed document ID: {doc_id}")
                 return True
             else:
-                print(f"Document ID {doc_id} not found.")
+                logger.info(f"Document ID {doc_id} not found.")
                 return False
 
     def update_bm25(self) -> None:
@@ -211,12 +211,12 @@ class BM25_search:
         if not query.strip():
             return []
         processed_query = self.preprocess(query)
-        print(f"Tokenized Query: {processed_query}")
+        logger.debug(f"Tokenized Query: {processed_query}")
         with self.lock:
             if self.bm25:
                 return self.bm25.get_scores(processed_query)
             else:
-                print("BM25 is not initialized.")
+                logger.info("BM25 is not initialized.")
                 return []
                 
     async def async_get_scores(self, query: str) -> List[float]:
@@ -232,12 +232,12 @@ class BM25_search:
         if not query.strip():
             return []
         processed_query = await self.async_preprocess(query)
-        print(f"Tokenized Query: {processed_query}")
+        logger.info(f"Tokenized Query: {processed_query}")
         with self.lock:
             if self.bm25:
                 return await asyncio.to_thread(self.bm25.get_scores, processed_query)
             else:
-                print("BM25 is not initialized.")
+                logger.info("BM25 is not initialized.")
                 return []
 
     def get_top_n_docs(self, query: str, n: int = 5, include_doc_ids: Optional[List[str]] = None, 
@@ -466,7 +466,7 @@ class BM25_search:
             self.doc_dict.clear()
             self.doc_ids = []
             self.bm25 = None
-            print("BM25 documents cleared and index reset.")
+            logger.info("BM25 documents cleared and index reset.")
             
     async def async_clear_documents(self) -> None:
         """
@@ -476,7 +476,7 @@ class BM25_search:
             self.doc_dict.clear()
             self.doc_ids = []
             self.bm25 = None
-            print("BM25 documents cleared and index reset.")
+            logger.info("BM25 documents cleared and index reset.")
             
     def get_doc_terms(self, doc_id: str) -> Dict[str, int]:
         """

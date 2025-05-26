@@ -1,11 +1,13 @@
-# Core components module (rag_components.py)
+# Core components module (Retrieval_components.py)
 import logging
 import threading
 import platform
 import time
+import platform
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable, Sequence, Union, Optional, Set
+from typing import List, Dict, Any, Optional, Tuple, Callable, Union, Optional, Set, Sequence      
+from collections.abc import Iterable                                       
 from dataclasses import dataclass, asdict
 from starlette.concurrency import run_in_threadpool
 import numpy as np
@@ -17,6 +19,8 @@ from vidavox.utils.pretty_logger import pretty_json_log
 from vidavox.utils.doc_tracker import compute_checksum
 from vidavox.utils.script_tracker import log_processing_time
 from vidavox.retrieval.persistence_search import AsyncPersistence
+from vidavox.schemas.common import DocItem
+
 
 
 
@@ -25,10 +29,6 @@ logging.basicConfig()
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class DocItem:
-    path: str          # full file system path
-    db_id: str | None  # UUID we got back from upload_files
 
 @dataclass
 class SearchResult:
@@ -59,6 +59,7 @@ class DefaultResultFormatter(BaseResultFormatter):
             "text": result.text,
             "page": result.meta_data.get('page', 'unknown'),
             "score": result.score,
+            "page": result.meta_data.get('page', 'unknown')
         }
 
 @dataclass
@@ -273,7 +274,7 @@ class FileProcessor:
         """Extract basic metadata from a file."""
         try:
             stat = file_path.stat()
-            # Cross-platform creation time handling
+             # Cross-platform creation time handling
             if hasattr(stat, "st_birthtime"):
                 creation_time = time.ctime(stat.st_birthtime)
             elif platform.system() == "Windows":
@@ -325,7 +326,7 @@ import pickle
 from typing import Dict, Any
 
 class StateManager:
-    """Handles persistence of RAG engine state."""
+    """Handles persistence of Retrieval engine state."""
     
     @staticmethod
     def save_state(path: str, state_data: Dict[str, Any]) -> bool:
@@ -357,7 +358,7 @@ class StateManager:
             return None
 
 
-# Main RAG Engine module (rag_engine.py)
+# Main Retrieval Engine module (Retrieval_engine.py)
 import asyncio
 from typing import List, Optional, Any, Dict, Tuple, Callable, Union
 
@@ -397,11 +398,11 @@ async def update_last_index_update(async_session, new_time: datetime.datetime):
             session.add(meta)
         await session.commit()
 
-class RAG_Engine:
+class Retrieval_Engine:
     """Main Retrieval Augmented Generation engine with modular components."""
     
     def __init__(self, embedding_model: str = 'all-MiniLM-L6-v2', use_async: bool = False, show_docs: bool = False, vector_store:VectorStorePsql = None):
-        """Initialize the RAG engine with all required components."""
+        """Initialize the Retrieval engine with all required components."""
         self.use_async = use_async
         self.show_docs = show_docs
         self.token_counter = TokenCounter()
@@ -602,7 +603,7 @@ class RAG_Engine:
     @log_processing_time
     def from_paths(
         self,
-         sources: Sequence[Union[str, DocItem]],                # <-- was List[str] sources
+        sources: Sequence[Union[str, 'DocItem']],    
         *,
         config: Optional[ProcessingConfig] = None,
         chunker: Optional[Callable] = None,
@@ -613,7 +614,7 @@ class RAG_Engine:
         metadata_cols: Optional[List[str]] = None,
         use_recursive:bool=True,
         user_id: Optional[str] = "User A"
-    ) -> 'RAG_Engine':
+    ) -> 'Retrieval_Engine':
         """
         Build engine from a list of file paths, with mixed format support.
         
@@ -641,6 +642,7 @@ class RAG_Engine:
         # Use existing documents to perform incremental indexing
         existing_docs = self.doc_manager.documents
         # Configure progress tracking
+        iterator: Iterable = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
         iterator = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
         
         # Collect processing statistics
@@ -653,8 +655,19 @@ class RAG_Engine:
         
         # Process files
         for doc in iterator:
-            file_path = doc.path
-            file_db_id = doc.db_id 
+                 # normalise the input ----------------------------------------------
+            if isinstance(doc, DocItem):
+                file_path: str = doc.path
+                file_db_id: Optional[str] = doc.db_id
+            elif isinstance(doc, str):
+                file_path = doc
+                file_db_id = None          # path supplied without DB id
+            else:                           # defensive: unsupported element
+                raise TypeError(
+                    f"Each element in 'sources' must be a str or DocItem, got {type(doc)}"
+                )
+
+        # ------------------------------------------------------------------
             try:
                 is_csv = file_path.lower().endswith('.csv')
                 is_excel = file_path.lower().endswith('.xlsx') or file_path.lower().endswith('.xls')
@@ -733,7 +746,7 @@ class RAG_Engine:
         text_col: Optional[str] = None,
         metadata_cols: Optional[List[str]] = None,
         use_recursive:bool=True
-    ) -> 'RAG_Engine':
+    ) -> 'Retrieval_Engine':
         """
         Build engine from all files in a directory.
         
@@ -754,10 +767,14 @@ class RAG_Engine:
         
         if not file_paths:
             raise ValueError(f"No files found in directory {directory} matching criteria.")
-            
+        
+        # Wrap plain file paths into DocItem instances
+        doc_items = [DocItem(path=fp, db_id=None) for fp in file_paths]
+
+        
         logger.info(f"Found {len(file_paths)} files in {directory}.")
         return self.from_paths(
-            file_paths,
+            doc_items,
             config=config or ProcessingConfig(),
             chunker=chunker,
             show_progress=show_progress,
@@ -784,8 +801,8 @@ class RAG_Engine:
                 # Update token counter
                 for doc_id, text in zip(doc_ids, texts):
                     self.token_counter.add_document(doc_id, text, user_id=user_id)
-                
-                # --------------- CPU‑bound indexing off the event loop -----------
+     
+                    # --------------- CPU‑bound indexing off the event loop -----------
  
                 async def _index():
                     # BM25 is pure‑python but fast; FAISS is the expensive bit.
@@ -959,7 +976,7 @@ class RAG_Engine:
          # Apply reasonable limits to prevent resource exhaustion
         capped_top_k = min(top_k, max_results_size)
         results = self.search(query_text, keywords, capped_top_k, threshold, prefixes, include_doc_ids, exclude_doc_ids, user_id=user_id)
-        return self._process_search_results(results, result_formatter=result_formatter)
+        return self._process_search_results(results)
     
     async def retrieve_async(self, query_text: str, keywords: Optional[List[str]] = None,
                            threshold: float = 0.4, top_k: int = 5, result_formatter: Optional[BaseResultFormatter] = None,
@@ -1035,9 +1052,13 @@ class RAG_Engine:
                 continue
             seen.add(doc_id)
             doc_obj = self.doc_manager.documents[doc_id]
+          
             sr = SearchResult(doc_id, doc_obj.text, doc_obj.meta_data, score)
+            # logger.info(f"\n\n\n")
+            # logger.info(f"sr: {sr}")
             output.append(formatter.format(sr))
-
+            # logger.info(f"\n\n\n")
+        # logger.info(f"Search result: {output}")
         return output or [{"id": "None.", "url": "None.", "text": None}]
     
 
@@ -1221,8 +1242,6 @@ class RAG_Engine:
             if batch:
                 # self.bm25_wrapper.add_documents(batch)
                 # self.faiss_wrapper.add_documents(batch)
-                 # --------------- CPU‑bound indexing off the event loop -----------
-
                 async def _index():
                     # BM25 is pure‑python but fast; FAISS is the expensive bit.
                     self.bm25_wrapper.add_documents(batch)

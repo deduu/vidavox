@@ -34,7 +34,7 @@ class TokenSnapshot:
 # ---------------------------------------------------------------------
 class TokenCounter:
     """
-    Thread‑safe token counter with *optional* user_id bookkeeping.
+    Thread-safe token counter with *optional* user_id bookkeeping.
 
     • add_document(doc_id, text, user_id=None)
     • remove_document(doc_id)
@@ -151,7 +151,7 @@ class TokenCounter:
     def snapshot(self) -> TokenSnapshot:
         """
         Return an *immutable* view for logging or persistence.
-        Deep‑copies so concurrent mutation won’t change the snapshot.
+        Deep-copies so concurrent mutation won't change the snapshot.
         """
         with self.lock:
             return TokenSnapshot(

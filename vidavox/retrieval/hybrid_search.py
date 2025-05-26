@@ -53,6 +53,10 @@ class Hybrid_search:
         # Create a unified set of document IDs.
         all_doc_ids = sorted(set(bm25_doc_ids).union(faiss_doc_ids))
         
+        self.logger.info(f"all_doc_ids: {all_doc_ids}")
+        self.logger.info(f"prefix: {prefixes}")
+
+
         # Optionally filter doc_ids based on prefixes.
         filtered_doc_ids = await self._filter_doc_ids_by_prefixes_async(all_doc_ids, prefixes)
         if not filtered_doc_ids:
