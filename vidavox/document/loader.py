@@ -11,14 +11,29 @@ from langchain_community.document_loaders import (
     TextLoader,
 )
 
+
 class BaseDocumentLoader(ABC):
     @abstractmethod
     def load(self, file_path: str) -> List[Document]:
         pass
+    def count_pages(self, file_path: str) -> int:
+        """
+        Default “page” count = number of Document objects returned.
+        Subclasses (e.g. PDF) can override for more accurate results.
+        """
+        docs = self.load(file_path)
+        return len(docs)
 
 class PDFLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:
         return PyPDFLoader(file_path, extract_images=True).load()
+    
+    def count_pages(self, file_path: str) -> int:
+        # use a low-level reader to get the real PDF page count
+        from PyPDF2 import PdfReader
+
+        reader = PdfReader(file_path)
+        return len(reader.pages)
 
 class DocxLoader(BaseDocumentLoader):
     def load(self, file_path: str) -> List[Document]:

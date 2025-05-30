@@ -643,7 +643,7 @@ class Retrieval_Engine:
         existing_docs = self.doc_manager.documents
         # Configure progress tracking
         iterator: Iterable = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
-        iterator = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
+        # iterator = tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
         
         # Collect processing statistics
         stats = {
