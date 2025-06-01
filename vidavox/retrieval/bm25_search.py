@@ -199,6 +199,55 @@ class BM25_search:
             else:
                 logger.info(f"Document ID {doc_id} not found.")
                 return False
+    
+    def remove_documents(self, doc_ids: List[str]) -> List[str]:
+        """
+        Remove multiple documents at once. Returns the list of successfully removed IDs.
+        Rebuilds the BM25 index only once after all deletions.
+        """
+        removed = []
+        with self.lock:
+            for doc_id in doc_ids:
+                if doc_id in self.doc_dict:
+                    del self.doc_dict[doc_id]
+                    removed.append(doc_id)
+                else:
+                    logger.info(f"Document ID '{doc_id}' not found; skipping.")
+            # Update the ordered list of IDs
+            self.doc_ids = list(self.doc_dict.keys())
+
+        if removed:
+            # Rebuild BM25 index a single time
+            self.update_bm25()
+            logger.info(f"Batch removed {len(removed)} docs: {removed}")
+        else:
+            logger.info("No documents were removed; nothing to rebuild.")
+
+        return removed
+
+    async def async_remove_documents(self, doc_ids: List[str]) -> List[str]:
+        """
+        Asynchronously remove multiple documents and update the BM25 index once.
+        Returns the list of removed IDs.
+        """
+        removed = []
+        with self.lock:
+            for doc_id in doc_ids:
+                if doc_id in self.doc_dict:
+                    del self.doc_dict[doc_id]
+                    removed.append(doc_id)
+                else:
+                    logger.info(f"Document ID '{doc_id}' not found; skipping.")
+            self.doc_ids = list(self.doc_dict.keys())
+
+        if removed:
+            # Offload the index rebuild to a thread so as not to block the event loop
+            await asyncio.to_thread(self.update_bm25)
+            logger.info(f"Batch asynchronously removed {len(removed)} docs: {removed}")
+        else:
+            logger.info("No documents were removed asynchronously; nothing to rebuild.")
+
+        return removed
 
     def update_bm25(self) -> None:
         tokenized_docs = [self.doc_dict[doc_id]["tokenized"] for doc_id in self.doc_ids]

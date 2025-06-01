@@ -5,6 +5,7 @@ from sentence_transformers import SentenceTransformer
 import logging
 import faiss
 import numpy as np
+import torch
 
 from vidavox.utils.script_tracker import log_processing_time
 
@@ -240,32 +241,42 @@ class FAISS_search:
         self, 
         embedding_model: Optional[Union[str, SentenceTransformer]] = None
     ) -> SentenceTransformer:
+        """
+        Initialize a SentenceTransformer on GPU if CUDA is available, otherwise on CPU.
+        """
         try:
+            # Determine device
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
             if embedding_model is None:
-                logger.info(f"Using default model: {self.DEFAULT_MODEL_NAME}")
-                embedding_model = SentenceTransformer(self.DEFAULT_MODEL_NAME)
+                logger.info(f"Using default model '{self.DEFAULT_MODEL_NAME}' on device={device}")
+                model = SentenceTransformer(self.DEFAULT_MODEL_NAME, device=device)
             elif isinstance(embedding_model, str):
-                logger.info(f"Loading model: {embedding_model}")
-                embedding_model = SentenceTransformer(embedding_model)
+                logger.info(f"Loading model '{embedding_model}' on device={device}")
+                model = SentenceTransformer(embedding_model, device=device)
             elif isinstance(embedding_model, SentenceTransformer):
-                logger.info("Using provided SentenceTransformer instance")
+                # If the user has already loaded a SentenceTransformer, move it to GPU/CPU as needed
+                model = embedding_model
+                try:
+                    model.to(device)
+                    logger.info(f"Moved provided SentenceTransformer instance to device={device}")
+                except Exception:
+                    logger.warning("Could not move provided SentenceTransformer to the desired device; continuing as is.")
             else:
                 raise ValueError("Invalid embedding_model type")
-            return embedding_model
+            return model
         except Exception as e:
             raise RuntimeError(f"Model initialization failed: {str(e)}")
             
     async def async_initialize_embedding_model(
-        self, 
-        embedding_model: Optional[Union[str, SentenceTransformer]] = None
+    self, 
+    embedding_model: Optional[Union[str, SentenceTransformer]] = None
     ) -> SentenceTransformer:
-        """
-        Asynchronously initialize the embedding model.
-        """
+        # This will now invoke your updated _initialize_embedding_model, which handles CUDA/CPU.
         return await asyncio.to_thread(
             self._initialize_embedding_model, 
             embedding_model
         )
+
 
     def get_embedding_dimension(self) -> int:
         if self.embedding_model is None:

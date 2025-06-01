@@ -3,8 +3,9 @@ import logging
 from sklearn.preprocessing import MinMaxScaler
 from sentence_transformers import CrossEncoder
 import torch
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from enum import Enum
+
 import asyncio
 
 class SearchMode(Enum):
@@ -454,3 +455,118 @@ class Hybrid_search:
         
         reranked_results = sorted(zip(doc_ids, rerank_scores), key=lambda x: x[1], reverse=True)
         return reranked_results
+    
+        # ────────────────────────────────────────────────────────────────────────
+    # 1) New: remove a single document from both indices
+    def remove_document(self, doc_id: str) -> Dict[str, bool]:
+        """
+        Remove a single document (by ID) from both BM25 and FAISS indexes.
+        Returns a dict { "bm25_removed": bool, "faiss_removed": bool } indicating success.
+        """
+        bm25_removed  = False
+        faiss_removed = False
+
+        # 1a) BM25 side
+        try:
+            bm25_removed = self.bm25_search.remove_document(doc_id)
+        except Exception as e:
+            self.logger.warning(f"BM25 failed to remove '{doc_id}': {e}")
+
+        # 1b) FAISS side
+        try:
+            faiss_removed = self.faiss_search.remove_document(doc_id)
+        except Exception as e:
+            self.logger.warning(f"FAISS failed to remove '{doc_id}': {e}")
+
+        return {
+            "bm25_removed":  bm25_removed,
+            "faiss_removed": faiss_removed
+        }
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 2) New: remove multiple documents in batch from both indices
+    def remove_documents(self, doc_ids: List[str]) -> Dict[str, List[str]]:
+        """
+        Remove a list of document IDs from both BM25 and FAISS indexes in one batch.
+        Returns a dict:
+          {
+            "bm25_removed":  [list of IDs BM25 actually deleted],
+            "faiss_removed": [list of IDs FAISS actually deleted]
+          }
+        """
+        bm25_removed_list  = []
+        faiss_removed_list = []
+
+        # 2a) BM25 side: call its batch‐delete
+        try:
+            bm25_removed_list = self.bm25_search.remove_documents(doc_ids)
+        except Exception as e:
+            self.logger.warning(f"BM25 batch removal failed: {e}")
+
+        # 2b) FAISS side: call its batch‐delete
+        try:
+            faiss_removed_list = self.faiss_search.remove_documents(doc_ids)
+        except Exception as e:
+            self.logger.warning(f"FAISS batch removal failed: {e}")
+
+        return {
+            "bm25_removed":  bm25_removed_list,
+            "faiss_removed": faiss_removed_list
+        }
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 3) New: async version for single document
+    async def async_remove_document(self, doc_id: str) -> Dict[str, bool]:
+        """
+        Asynchronously remove one document from both indices.
+        Returns a dict { "bm25_removed": bool, "faiss_removed": bool }.
+        """
+        bm25_removed  = False
+        faiss_removed = False
+
+        # BM25: offload to thread if needed
+        try:
+            bm25_removed = await asyncio.to_thread(self.bm25_search.remove_document, doc_id)
+        except Exception as e:
+            self.logger.warning(f"BM25 async failed to remove '{doc_id}': {e}")
+
+        # FAISS: offload to thread
+        try:
+            faiss_removed = await asyncio.to_thread(self.faiss_search.remove_document, doc_id)
+        except Exception as e:
+            self.logger.warning(f"FAISS async failed to remove '{doc_id}': {e}")
+
+        return {
+            "bm25_removed":  bm25_removed,
+            "faiss_removed": faiss_removed
+        }
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 4) New: async version for batch delete
+    async def async_remove_documents(self, doc_ids: List[str]) -> Dict[str, List[str]]:
+        """
+        Asynchronously remove multiple documents from both indices in one shot.
+        Returns dict {
+            "bm25_removed":  [IDs removed from BM25],
+            "faiss_removed": [IDs removed from FAISS]
+        }.
+        """
+        bm25_removed_list  = []
+        faiss_removed_list = []
+
+        # BM25 part
+        try:
+            bm25_removed_list = await asyncio.to_thread(self.bm25_search.remove_documents, doc_ids)
+        except Exception as e:
+            self.logger.warning(f"BM25 async batch removal failed: {e}")
+
+        # FAISS part
+        try:
+            faiss_removed_list = await asyncio.to_thread(self.faiss_search.remove_documents, doc_ids)
+        except Exception as e:
+            self.logger.warning(f"FAISS async batch removal failed: {e}")
+
+        return {
+            "bm25_removed":  bm25_removed_list,
+            "faiss_removed": faiss_removed_list
+        }
