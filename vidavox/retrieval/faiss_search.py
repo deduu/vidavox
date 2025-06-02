@@ -459,6 +459,57 @@ class FAISS_search:
         await self._async_rebuild_index()
         logger.info(f"Removed document ID: {doc_id}")
         return True
+    
+    def remove_documents(self, doc_ids: List[str]) -> List[str]:
+        """
+        Remove multiple documents at once. Returns the list of successfully removed IDs.
+        Rebuilds the FAISS index only once after all deletions.
+        """
+        removed = []
+        with self.lock:
+            for doc_id in doc_ids:
+                if doc_id in self.doc_dict:
+                    # Remove from dicts
+                    faiss_id = self.id_map.pop(doc_id)
+                    del self.doc_dict[doc_id]
+                    del self.reverse_id_map[faiss_id]
+                    removed.append(doc_id)
+                else:
+                    logger.warning(f"Document ID '{doc_id}' not found; skipping.")
+
+        if removed:
+            # Rebuild the index a single time
+            self._rebuild_index()
+            logger.info(f"Batch removed {len(removed)} docs: {removed}")
+        else:
+            logger.info("No documents were removed; nothing to rebuild.")
+
+        return removed
+
+    async def async_remove_documents(self, doc_ids: List[str]) -> List[str]:
+        """
+        Asynchronously remove multiple documents and rebuild the index once.
+        Returns the list of removed IDs.
+        """
+        removed = []
+        with self.lock:
+            for doc_id in doc_ids:
+                if doc_id in self.doc_dict:
+                    faiss_id = self.id_map.pop(doc_id)
+                    del self.doc_dict[doc_id]
+                    del self.reverse_id_map[faiss_id]
+                    removed.append(doc_id)
+                else:
+                    logger.warning(f"Document ID '{doc_id}' not found; skipping.")
+
+        if removed:
+            # Offload the rebuild to a threadpool so we don't block the event loop
+            await self._async_rebuild_index()
+            logger.info(f"Batch asynchronously removed {len(removed)} docs: {removed}")
+        else:
+            logger.info("No documents were removed asynchronously; nothing to rebuild.")
+
+        return removed
 
     def _rebuild_index(self) -> None:
         """
