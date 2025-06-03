@@ -934,7 +934,30 @@ class Retrieval_Engine:
             await self.persistence.flush_async()
         return True
 
-    
+    def delete_documents(self, doc_ids: List[str], user_id: str = None) -> List[str]:
+        """
+        Remove a batch of documents from BM25, FAISS, token counter, and doc_manager.
+        Returns the list of doc_ids that were successfully deleted.
+        """
+        # 1) Filter out any doc_ids that aren’t actually present
+        valid_to_delete = [d for d in doc_ids if d in self.doc_manager.get_user_docs(user_id)]
+        if not valid_to_delete:
+            return []
+
+        # 2) Batch‐remove from both indices in one call each
+        self.bm25_wrapper.remove_documents(valid_to_delete)
+        self.faiss_wrapper.remove_documents(valid_to_delete)
+
+        # 3) Remove from token_counter and doc_manager in a loop
+        for doc_id in valid_to_delete:
+            try:
+                self.token_counter.remove_document(doc_id)
+                self.doc_manager.delete_document(doc_id, user_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete {doc_id} for {user_id}: {e}")
+
+        return valid_to_delete
+
     async def clear_async(self, user_id: Optional[str] = None):
         if user_id is None:
             # implement a full clear if you need it:
