@@ -299,6 +299,24 @@ class FAISS_search:
                 convert_to_numpy=True
             )
             return len(dummy_embedding)
+        
+    def _search_embeddings(
+        self,
+        embeddings: np.ndarray,
+        k: int,
+        selector: Optional[faiss.IDSelector] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Low-level wrapper around `index.search`.
+        Expects `embeddings` to be np.float32 with shape (n_queries, dim).
+        Does **not** acquire locks or map IDs – callers handle that.
+        """
+        if selector is not None:
+            params = faiss.SearchParameters()
+            params.sel = selector
+            return self.index.search(embeddings, k, params)
+        # fallback: plain search
+        return self.index.search(embeddings, k)
 
     def add_document(self, doc_id: str, doc: str) -> None:
         """
@@ -728,6 +746,54 @@ class FAISS_search:
             
         except Exception as e:
             raise RuntimeError(f"Failed to encode query asynchronously: {str(e)}")
+    
+
+    def search_batch(
+        self,
+        queries: List[str],
+        k: int,
+        id_filter: Optional[IDFilter] = None,
+    ) -> List[Tuple[np.ndarray, List[str]]]:
+        """
+        Blocking version of batch search.
+        Returns: [(distances, [doc_id, ...]), ...]  – one tuple per query.
+        """
+        if not queries:
+            return []
+
+        # ---------- fast read-only section ----------
+        with self.lock:
+            if self.index.ntotal == 0:
+                return [(np.array([]), [])] * len(queries)
+
+        # ---------- encode all queries at once ----------
+        try:
+            embeddings = self.embedding_model.encode(
+                queries, convert_to_numpy=True
+            ).astype("float32")
+        except Exception as e:
+            raise RuntimeError(f"Failed to encode queries: {e}") from e
+
+        # ---------- single FAISS call ----------
+        selector = id_filter.get_selector() if id_filter else None
+        distances, indices = self._search_embeddings(embeddings, k, selector)
+
+        # ---------- vectorised post-filter & ID remap ----------
+        results: List[Tuple[np.ndarray, List[str]]] = []
+        for row_d, row_i in zip(distances, indices):
+            d, i = row_d, row_i
+            if id_filter:
+                d, i = id_filter.filter_results(d, i, self.reverse_id_map)
+
+            valid = i != -1
+            doc_ids = [self.reverse_id_map[ix] for ix in i[valid]]
+
+            results.append((d[valid], doc_ids))
+
+        return results
+    
+    
+
     
     def get_document(self, doc_id: str) -> str:
         """

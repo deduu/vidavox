@@ -47,320 +47,58 @@ class BaseResultFormatter:
         # Default implementation: simply convert the data class to a dictionary
         return asdict(result)
 
+from typing import Dict, Any
+
 class CustomResultFormatter(BaseResultFormatter):
     def format(self, result: SearchResult) -> Dict[str, Any]:
-        # Customize the result format as needed
+        base_url = result.meta_data.get("url", "unknown_url")
+        # Use a more descriptive name for the original page value
+        original_page = result.meta_data.get("page")
+        source = result.meta_data.get("source")
+        
+        # Initialize with default values. The final page will default to the original.
+        full_url = base_url
+        final_page = original_page
+
+        # Check if page has a usable value
+        if original_page is not None and original_page != "unknown":
+            try:
+                # Attempt to convert page to an integer
+                page_number = int(original_page)
+                
+                # Calculate the incremented page number ONCE
+                incremented_page = page_number + 1
+                
+                # 1. Use it to build the full URL
+                full_url = f"{base_url}#page={incremented_page}"
+                
+                # 2. Assign it to be the final returned page value
+                final_page = incremented_page
+                
+            except (ValueError, TypeError):
+                # If conversion fails, full_url and final_page will keep their default values.
+                print(f"Warning: Could not convert page '{original_page}' to an integer.")
+                pass
+
         return {
-            "doc_id": result.doc_id,
-            "page_content": result.text,
-            "relevance": result.score,
+            "id":     result.doc_id,
+            "url":    full_url,
+            "text":   result.text,
+            "page":   final_page,  #  <-- Now returns the incremented page number
+            "source": source,
+            "score":  result.score,
         }
+    
 class DefaultResultFormatter(BaseResultFormatter):
     def format(self, result: SearchResult) -> Dict[str, Any]:
         # Default implementation: simply convert the data class to a dictionary
         return{
             "id": result.doc_id,
-            "url": result.meta_data.get('source', 'unknown_url'),
+            "url": result.meta_data.get('url', 'unknown_url'),
             "text": result.text,
             "page": result.meta_data.get('page', 'unknown'),
             "score": result.score,
-            "page": result.meta_data.get('page', 'unknown')
         }
-
-# @dataclass
-# class Doc:
-#     doc_id: str
-#     text: str
-#     meta_data: Dict[str, any]
-
-# class DocumentManager:
-#     """
-#     Single-engine, multi-tenant document registry with shared documents.
-#     • All docs live in one dict -> O(1) lookup by id
-#     • user_to_doc_ids keeps a per-tenant index -> O(1) filtering
-#     • owner_id is injected into each doc.meta_data for persistence-layer filters
-#     • Documents without a specific user_id belong to all users (shared)
-#     """
-#     def __init__(self) -> None:
-#         self.documents: Dict[str, Doc] = {}
-#         self.user_to_doc_ids: Dict[str, Set[str]] = defaultdict(set)
-#         self.shared_doc_ids: Set[str] = set()  # Tracks documents that belong to all users
-#         self.lock = threading.RLock()
-#         self._just_added: Dict[Optional[str], List[str]] = defaultdict(list)
-
-#     # ---------- INGEST ----------
-#     def add_document(
-#         self,
-#         doc_id: str,
-#         text: str,
-#         meta_data: Optional[Dict] = None,
-#         user_id: Optional[str] = None,
-#     ) -> None:
-#         meta = (meta_data or {}).copy()
-#         if user_id is not None:
-#             meta["owner_id"] = user_id
-        
-#         with self.lock:
-#             self.documents[doc_id] = Doc(doc_id, text, meta)
-#             if user_id is not None:
-#                 self.user_to_doc_ids[user_id].add(doc_id)
-#             else:
-#                 self.shared_doc_ids.add(doc_id)
-
-#             self._just_added[user_id].append(doc_id)
-
-#     def add_documents(
-#         self,
-#         docs: List[Tuple[str, str, Dict]],
-#         user_id: Optional[str] = None,
-#     ) -> None:
-#         with self.lock:
-#             # Prepare all documents at once
-#             new_docs = {}
-#             doc_ids = set()
-#             newly_added_ids = []
-            
-#             for doc_id, text, meta_data in docs:
-#                 meta = (meta_data or {}).copy()
-#                 if user_id is not None:
-#                     meta["owner_id"] = user_id
-#                 new_docs[doc_id] = Doc(doc_id, text, meta)
-#                 # doc_ids.add(doc_id)
-#                 newly_added_ids.append(doc_id)
-            
-#             # Batch update documents dictionary
-#             self.documents.update(new_docs)
-            
-#             # Associate documents with user or mark as shared
-#             if user_id is not None:
-#                 self.user_to_doc_ids[user_id].update(newly_added_ids)
-#             else:
-#                 self.shared_doc_ids.update(newly_added_ids)
-            
-#             self._just_added[user_id].extend(newly_added_ids)
-
-#     # ---------- READ ----------
-#     def get_document(self, user_id: str, doc_id: str) -> Optional[str]:
-#         """
-#         Return text if this user owns the doc or if it's shared.
-#         """
-#         with self.lock:
-#             if doc_id not in self.user_to_doc_ids[user_id] and doc_id not in self.shared_doc_ids:
-#                 return None
-#             return self.documents[doc_id].text
-
-#     def get_metadata(self, user_id: str, doc_id: str) -> Optional[Dict]:
-#         with self.lock:
-#             if doc_id not in self.user_to_doc_ids[user_id] and doc_id not in self.shared_doc_ids:
-#                 return None
-#             return self.documents[doc_id].meta_data
-
-#     def get_user_docs(self, user_id: str) -> List[str]:
-#         """Fast O(#docs_user + #shared_docs) listing for query filters."""
-#         with self.lock:
-#             # Return both user-specific and shared documents
-#             user_docs = set(self.user_to_doc_ids.get(user_id, set()))
-#             return list(user_docs | self.shared_doc_ids)
-    
-#     def get_all_documents(self) -> List[Doc]:
-#         """
-#         Return a list of every Doc in the registry (shared + per‐user).
-#         """
-#         with self.lock:
-#             # .values() is O(n) in number of docs
-#             return {doc_id: doc.text for doc_id, doc in self.documents.items()}
-    
-#     def get_all_just_added_documents(
-#         self,
-#         user_id: Optional[str],
-#         clear_after: bool = True
-#     ) -> Dict[str, str]:
-#         """
-#         Return a map of doc_id -> text for everything that was
-#         added *since the last time you called this method* (for this user_id).
-#         If clear_after=True (default), empties the buffer.
-#         """
-#         with self.lock:
-#             just_ids = list(self._just_added.get(user_id, []))
-#             result = {doc_id: self.documents[doc_id].text for doc_id in just_ids}
-#             if clear_after:
-#                 self._just_added[user_id].clear()
-#             return result
-
-    
-
-
-#     def get_all_documents_by_user(self) -> Dict[Optional[str], List[Doc]]:
-#         """
-#         Return a mapping from user_id to that user’s Docs,
-#         plus key None for shared-only docs.
-#         """
-#         with self.lock:
-#             result: Dict[Optional[str], List[Doc]] = {}
-
-#             # per‐user docs
-#             for uid, doc_ids in self.user_to_doc_ids.items():
-#                 result[uid] = [self.documents[d] for d in doc_ids]
-
-#             # shared docs (no owner)
-#             result[None] = [self.documents[d] for d in self.shared_doc_ids]
-
-#             return result
-
-#     # ---------- DELETE ----------
-#     def _delete_document_nolock(self, doc_id: str, user_id: Optional[str] = None) -> bool:
-#         """Delete a document without locking."""
-#         # Check document exists
-#         if doc_id not in self.documents:
-#             return False
-            
-#         # If user_id provided, check ownership
-#         if user_id is not None and doc_id not in self.user_to_doc_ids[user_id] and doc_id not in self.shared_doc_ids:
-#             return False
-            
-#         # Remove from user's collection if it belongs to a user
-#         for uid, docs in self.user_to_doc_ids.items():
-#             if doc_id in docs:
-#                 docs.remove(doc_id)
-                
-#         # Remove from shared if it's shared
-#         self.shared_doc_ids.discard(doc_id)
-        
-#         # Remove from main documents dictionary
-#         self.documents.pop(doc_id, None)
-#         return True
-    
-#     def delete_document(self, doc_id: str, user_id: Optional[str] = None) -> bool:
-#         with self.lock:
-#             return self._delete_document_nolock(doc_id, user_id)
-
-#     def delete_documents(self, doc_ids: List[str], user_id: Optional[str] = None) -> int:
-#         """Batch delete multiple documents, returns count of deleted docs"""
-#         deleted_count = 0
-#         with self.lock:
-#             for doc_id in doc_ids:
-#                 if self._delete_document_nolock(doc_id, user_id):
-#                     deleted_count += 1
-#             return deleted_count
-
-#     # ---------- UTIL ----------
-#     def clear_user(self, user_id: str) -> None:
-#         with self.lock:
-#             # Get user's document IDs
-#             doc_ids = self.user_to_doc_ids.pop(user_id, set())
-            
-#             # Delete documents that belong only to this user
-#             # (not shared and not belonging to other users)
-#             for doc_id in doc_ids:
-#                 is_used_elsewhere = any(doc_id in docs for uid, docs in self.user_to_doc_ids.items())
-#                 if not is_used_elsewhere and doc_id not in self.shared_doc_ids:
-#                     self.documents.pop(doc_id, None)
-
-#     def doc_count(self, user_id: Optional[str] = None) -> int:
-#         with self.lock:
-#             if user_id is None:
-#                 return len(self.documents)
-#             # Return count of user's documents plus shared documents
-#             return len(self.user_to_doc_ids.get(user_id, set())) + len(self.shared_doc_ids)
-
-#     def doc_ids(self, user_id: Optional[str] = None) -> List[str]:
-#         with self.lock:
-#             if user_id is None:
-#                 return sorted(self.documents.keys())
-#             # Return both user-specific and shared documents
-#             return sorted(set(self.user_to_doc_ids.get(user_id, set())) | self.shared_doc_ids)
-
-
-# class FileProcessor:
-#     """Handles document loading and processing from files and directories."""
-    
-#     @staticmethod
-#     def get_file_metadata(file_path: Path) -> dict:
-#         """Extract basic metadata from a file."""
-#         try:
-#             stat = file_path.stat()
-#              # Cross-platform creation time handling
-#             if hasattr(stat, "st_birthtime"):
-#                 creation_time = time.ctime(stat.st_birthtime)
-#             elif platform.system() == "Windows":
-#                 creation_time = time.ctime(stat.st_ctime)  # Windows: st_ctime is creation time
-#             else:
-#                 creation_time = "Unavailable"  # Linux has no creation time
-
-#             return {
-#                 "file_path": str(file_path),
-#                 "file_name": file_path.name,
-#                 "file_size": stat.st_size,
-#                 "creation_time": creation_time,
-#                 "modification_time": time.ctime(stat.st_mtime),
-#             }
-#         except Exception as e:
-#             logger.warning(f"Could not get metadata for {file_path}: {e}")
-#             return {}
-    
-#     @staticmethod
-#     def collect_files(directory: str, recursive: bool = True, 
-#                      allowed_extensions: Optional[List[str]] = None) -> List[str]:
-#         """Collect all relevant files from a directory."""
-#         dir_path = Path(directory)
-#         if not dir_path.is_dir():
-#             raise ValueError(f"Directory {directory} does not exist.")
-
-#         # Collect files using appropriate glob method
-#         files = list(dir_path.rglob("*")) if recursive else list(dir_path.glob("*"))
-
-#         # Filter files based on criteria
-#         file_paths = []
-#         for f in files:
-#             if f.is_file() and not f.name.startswith("."):
-#                 if allowed_extensions:
-#                     if f.suffix.lower() in [ext.lower() for ext in allowed_extensions]:
-#                         file_paths.append(str(f))
-#                 else:
-#                     file_paths.append(str(f))
-
-#         if not file_paths:
-#             logger.warning(f"No files found in directory {directory} matching criteria.")
-            
-#         return file_paths
-
-
-# # State management module (state_manager.py)
-# import os
-# import pickle
-# from typing import Dict, Any
-
-# class StateManager:
-#     """Handles persistence of Retrieval engine state."""
-    
-#     @staticmethod
-#     def save_state(path: str, state_data: Dict[str, Any]) -> bool:
-#         """Save engine state to disk."""
-#         try:
-#             os.makedirs(os.path.dirname(path), exist_ok=True)
-#             with open(f"{path}_state.pkl", 'wb') as f:
-#                 pickle.dump(state_data, f)
-#             logger.info(f"State successfully saved to {path}_state.pkl")
-#             return True
-#         except Exception as e:
-#             logger.error(f"Failed to save state: {e}")
-#             return False
-    
-#     @staticmethod
-#     def load_state(path: str) -> Optional[Dict[str, Any]]:
-#         """Load engine state from disk."""
-#         if os.path.exists(f"{path}_state.pkl"):
-#             try:
-#                 with open(f"{path}_state.pkl", 'rb') as f:
-#                     state_data = pickle.load(f)
-#                 logger.info(f"State successfully loaded from {path}_state.pkl")
-#                 return state_data
-#             except Exception as e:
-#                 logger.error(f"Failed to load state: {e}")
-#                 return None
-#         else:
-#             logger.info(f"No state file found at {path}_state.pkl")
-#             return None
 
 
 # Main Retrieval Engine module (Retrieval_engine.py)
@@ -454,6 +192,7 @@ class Retrieval_Engine:
     def _process_csv_as_dataframe(
         self, 
         file_path: str, 
+        doc_id:str,
         text_col: str,
         metadata_cols: List[str],
         existing_docs: Dict[str, Document]
@@ -471,9 +210,6 @@ class Retrieval_Engine:
             
             # Process each row
             for idx, row in df.iterrows():
-                # doc_id = f"{file_name}_{idx}"
-                file_processing_uuid = str(uuid.uuid4())
-                doc_id = f"{file_name}_{file_processing_uuid}_chunk{idx}"
                 doc_text = str(row[text_col])
                 doc_checksum = compute_checksum(doc_text)
                 
@@ -507,6 +243,7 @@ class Retrieval_Engine:
     def _process_excel_as_dataframe(
         self, 
         file_path: str, 
+        doc_id:str,
         text_col: str,
         metadata_cols: List[str],
         existing_docs: Dict[str, Document]
@@ -524,8 +261,6 @@ class Retrieval_Engine:
 
             # Process each row
             for idx, row in df.iterrows():
-                file_processing_uuid = str(uuid.uuid4())
-                doc_id = f"{file_name}_{file_processing_uuid}_chunk{idx}"
                 doc_text = str(row[text_col])
                 doc_checksum = compute_checksum(doc_text)
 
@@ -560,11 +295,12 @@ class Retrieval_Engine:
     def _process_file(
         self,
         file_path: str,
+        file_url: str | None,
         config: ProcessingConfig,
         chunker: Optional[Callable] = None,
         use_recursive: bool = True,
         *,                             # <‑‑ makes the next arg keyword‑only
-        file_db_id: str | None = None  # <‑‑ NEW
+        doc_id: str | None = None  # <‑‑ NEW
         ) -> List[Tuple[str, str, Dict]]:
         processor = FileProcessor()
         file_name = os.path.basename(file_path)
@@ -585,16 +321,17 @@ class Retrieval_Engine:
             self.nodes = nodes
 
             for idx, doc in enumerate(nodes):
-                file_processing_uuid = str(uuid.uuid4())
-                if file_db_id is not None:
-                    doc_id = f"{file_db_id}_{file_name}_chunk{idx}"
-                else:
-                    doc_id = f"{file_name}_{file_processing_uuid}_chunk{idx}"
 
+                file_doc_id = f"{doc_id}_{file_name}_chunk{idx}"
                 meta   = dict(base_meta)  # copy
                 meta["file_type"] = Path(file_path).suffix.lower().lstrip(".")
+                meta["url"] = file_url
+
+                # print(f"meta:{meta}")
                 combined_meta     = {**meta, **doc.metadata}
-                batch_docs.append((doc_id, doc.page_content, combined_meta))
+
+                # print(f"combined_meta: {combined_meta}")
+                batch_docs.append((file_doc_id, doc.page_content, combined_meta))
 
                 if self.show_docs:
                     pretty_json_log(logger, batch_docs, "batch_docs:")
@@ -642,6 +379,7 @@ class Retrieval_Engine:
         config = config or ProcessingConfig()
         metadata_cols = metadata_cols or []
         batch_docs = []
+        file_url= None
         BATCH_SIZE = 100
 
         # Use existing documents to perform incremental indexing
@@ -663,10 +401,12 @@ class Retrieval_Engine:
                  # normalise the input ----------------------------------------------
             if isinstance(doc, DocItem):
                 file_path: str = doc.path
-                file_db_id: Optional[str] = doc.db_id
+                file_doc_id: Optional[str] = doc.doc_id
+                file_url: Optional[str] = doc.url
             elif isinstance(doc, str):
                 file_path = doc
-                file_db_id = None          # path supplied without DB id
+                file_doc_id = None   
+                file_url = None       # path supplied without DB id
             else:                           # defensive: unsupported element
                 raise TypeError(
                     f"Each element in 'sources' must be a str or DocItem, got {type(doc)}"
@@ -681,6 +421,7 @@ class Retrieval_Engine:
                 if is_csv and load_csv_as_pandas_dataframe:
                     file_docs = self._process_csv_as_dataframe(
                         file_path, 
+                        file_doc_id,
                         text_col=text_col,
                         metadata_cols=metadata_cols,
                         existing_docs = existing_docs
@@ -693,6 +434,7 @@ class Retrieval_Engine:
                 elif is_excel and load_excel_as_pandas_dataframe:
                     file_docs = self._process_excel_as_dataframe(
                         file_path,
+                        file_doc_id,
                         text_col=text_col,
                         metadata_cols=metadata_cols,
                         existing_docs = existing_docs
@@ -702,7 +444,7 @@ class Retrieval_Engine:
 
                 # 3) Other file types
                 else:
-                    file_docs = self._process_file(file_path, config, chunker, use_recursive, file_db_id=file_db_id)
+                    file_docs = self._process_file(file_path, file_url, config, chunker, use_recursive, doc_id=file_doc_id)
                     if file_docs:
                         stats['other_files_processed'] += 1
                 
@@ -774,7 +516,7 @@ class Retrieval_Engine:
             raise ValueError(f"No files found in directory {directory} matching criteria.")
         
         # Wrap plain file paths into DocItem instances
-        doc_items = [DocItem(path=fp, db_id=None) for fp in file_paths]
+        doc_items = [DocItem(path=fp, doc_id=None) for fp in file_paths]
 
         
         logger.info(f"Found {len(file_paths)} files in {directory}.")
@@ -861,34 +603,57 @@ class Retrieval_Engine:
             logger.error(f"Failed to add document {doc_id}: {e}")
             raise
     
-    async def add_document_async(self, doc_id: str, text: str, meta_data: Optional[Dict]=None):
-        # document manager is thread-safe, so we can call it directly
-        self.doc_manager.add_document(doc_id, text, meta_data)
-        self.token_counter.add_document(doc_id, text, user_id=meta_data.get("user_id"))
+    
+    async def add_document_async(
+        self,
+        doc_id: str,
+        text: str,
+        meta_data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Add a single document to the engine (asynchronous)."""
+        # Safe‐guard: meta_data might be None
+        owner_id = (meta_data or {}).get("user_id")
 
-        # assume your wrappers support async; if not, wrap in to_thread
+        # Update document manager (thread-safe)
+        self.doc_manager.add_document(doc_id, text, meta_data, owner_id)
+        self.token_counter.add_document(doc_id, text, user_id=owner_id)
+
+        # Offload BM25 and FAISS indexing to the threadpool if needed
+        # (Assuming wrapper supports async; otherwise wrap in run_in_threadpool)
         await self.bm25_wrapper.add_document_async(doc_id, text)
         await self.faiss_wrapper.add_document_async(doc_id, text)
 
-        # queue for persistence
+        # Queue for persistence and immediately flush
         if self.persistence:
             self.persistence.queue_docs([(doc_id, text, meta_data or {})])
-            # and then maybe immediately flush
             await self.persistence.flush_async()
+
     
     def add_documents(self, docs: List[Tuple[str, str, Optional[Dict]]]) -> None:
         """Add multiple documents to the engine efficiently."""
         self._process_document_batch(docs)
 
-    async def add_documents_async(self, docs: List[Tuple[str, str, Dict]]):
-        # mirror your sync batch logic, but with awaits
+    async def add_documents_async(
+        self,
+        docs: List[Tuple[str, str, Dict[str, Any]]]
+    ) -> None:
+        """Add multiple documents to the engine efficiently (asynchronous)."""
+        # docs is a list of (doc_id, text, meta_data) tuples.
+        # Update document manager and token counter
         self.doc_manager.add_documents(docs)
-        for doc_id, text, _ in docs:
-            self.token_counter.add_document(doc_id, text)
-        await self.bm25_wrapper.add_documents_async([(d, t) for d, t, _ in docs])
-        vecs = await self.faiss_wrapper.add_documents_async([(d, t) for d, t, _ in docs], return_vectors=True)
+        for doc_id, text, meta_data in docs:
+            owner_id = meta_data.get("user_id")
+            self.token_counter.add_document(doc_id, text, user_id=owner_id)
 
-        # queue and flush
+        # Offload BM25 indexing
+        bm25_pairs = [(d, t) for d, t, _ in docs]
+        await self.bm25_wrapper.add_documents_async(bm25_pairs)
+
+        # Offload FAISS indexing and capture vectors
+        faiss_pairs = [(d, t) for d, t, _ in docs]
+        vecs = await self.faiss_wrapper.add_documents_async(faiss_pairs, return_vectors=True)
+
+        # Queue and flush persistence
         if self.persistence:
             self.persistence.queue_docs(docs)
             self.persistence.queue_vectors(vecs)
@@ -919,17 +684,24 @@ class Retrieval_Engine:
             return False
 
         
-    async def delete_document_async(self, doc_id: str) -> bool:
-        if doc_id not in self.doc_manager.doc_ids:
+    
+    async def delete_document_async(self, doc_id: str, user_id: Optional[str] = None) -> bool:
+        """Remove a single document from the engine (asynchronous)."""
+        # Verify existence
+        all_docs = set(self.doc_manager.documents.keys())
+        allowed = set(self.doc_manager.get_user_docs(user_id) or [])
+        if doc_id not in all_docs or doc_id not in allowed:
             return False
-        idx = self.doc_manager.doc_ids.index(doc_id)
 
-        # remove from search backends
-        await self.bm25_wrapper.remove_document_async(idx)
-        await self.faiss_wrapper.remove_document_async(idx)
+        # Offload removal to wrappers
+        await self.bm25_wrapper.remove_document_async(doc_id)
+        await self.faiss_wrapper.remove_document_async(doc_id)
+
+        # Update token counter and document manager
         self.token_counter.remove_document(doc_id)
-        self.doc_manager.delete_document(doc_id)
-        # persistence might also need 
+        self.doc_manager.delete_document(doc_id, user_id)
+
+        # Flush persistence if needed
         if self.persistence:
             await self.persistence.flush_async()
         return True
@@ -957,22 +729,31 @@ class Retrieval_Engine:
                 logger.warning(f"Failed to delete {doc_id} for {user_id}: {e}")
 
         return valid_to_delete
-
-    async def clear_async(self, user_id: Optional[str] = None):
+    
+    async def clear_async(self, user_id: Optional[str] = None) -> None:
+        """
+        Clear all documents for a given user (if user_id provided), or all documents if user_id is None.
+        Resets token counters and clears BM25/FAISS and persistence stores (asynchronous).
+        """
         if user_id is None:
-            # implement a full clear if you need it:
-            # either add doc_manager.clear_all() or:
+            # Full clear
             self.doc_manager = DocumentManager()
         else:
+            # Clear only that user’s docs
             self.doc_manager.clear_user(user_id)
 
-        # reset other components
+        # Reset token counter
         self.token_counter = TokenCounter()
+
+        # Offload clearing of search indices
         await self.bm25_wrapper.clear_documents_async()
         await self.faiss_wrapper.clear_documents_async()
+
+        # Clear persistence layer
         if self.persistence:
             await self.persistence.clear_async()
-    
+
+            
     def query(self, query_text: str, keywords: Optional[List[str]] = None,
          threshold: float = 0.4, top_k: int = 5,
          result_formatter: Optional[BaseResultFormatter] = None,
@@ -1071,7 +852,7 @@ class Retrieval_Engine:
         if not results:
             return [{"id": "None.", "url": "None.", "text": None}]
 
-        formatter = result_formatter or DefaultResultFormatter()
+        formatter = result_formatter or CustomResultFormatter()
         seen, output = set(), []
 
         # process in batches if needed
@@ -1173,6 +954,167 @@ class Retrieval_Engine:
             logger.error(f"Async search failed: {e}")
             return []
     
+    # -----------------------------------------------------------------
+#  Retrieval_Engine ––– new public helpers
+# -----------------------------------------------------------------
+    def query_batch(
+        self,
+        queries: List[str],
+        keywords_list: Optional[List[List[str]]] = None,
+        threshold: float = 0.4,
+        top_k: int = 5,
+        result_formatter: Optional[BaseResultFormatter] = None,
+        prefixes: Optional[List[str]] = None,
+        include_doc_ids: Optional[List[str]] = None,
+        exclude_doc_ids: Optional[List[str]] = None,
+    ) -> List[List[Dict]]:
+        """
+        Batch version of `.query()`. Returns one formatted-result list per query.
+        """
+        if self.use_async:
+            return asyncio.run(
+                self.retrieve_batch_async(
+                    queries, keywords_list, threshold, top_k,
+                    result_formatter, prefixes,
+                    include_doc_ids, exclude_doc_ids,
+                )
+            )
+        return self.retrieve_batch(
+            queries, keywords_list, threshold, top_k,
+            result_formatter, prefixes,
+            include_doc_ids, exclude_doc_ids,
+        )
+
+
+    def retrieve_batch(
+        self,
+        queries: List[str],
+        keywords: Optional[List[List[str]]] = None,
+        threshold: float = 0.4,
+        top_k: int = 5,
+        result_formatter: Optional[BaseResultFormatter] = None,
+        prefixes: Optional[List[str]] = None,
+        include_doc_ids: Optional[List[str]] = None,
+        exclude_doc_ids: Optional[List[str]] = None,
+        max_results_size: int = 1000,
+        user_id: Optional[str] = None,
+        group_by_query: bool = False
+    ) -> List[List[Dict]]:
+        """
+        Synchronous batch retrieval. Keeps per-query results separate.
+        """
+        if user_id is not None:
+            include_doc_ids = self._allowed_ids(user_id)
+
+        capped_top_k = min(top_k, max_results_size)
+
+        raw_batches = self.search_batch(
+            queries, keywords, capped_top_k, threshold,
+            prefixes, include_doc_ids, exclude_doc_ids, user_id
+        )
+
+        # Convert each (doc_id, score) list into a List[Dict]
+        per_query_results: List[List[Dict]] = [
+            self._process_search_results(batch, result_formatter)
+            for batch in raw_batches
+        ]
+
+        if group_by_query:
+            # Return as List[List[Dict]]
+            return per_query_results
+
+        # Otherwise, flatten + dedupe + keep best score
+        return self._merge_batches(per_query_results)
+
+
+
+    async def retrieve_batch_async(
+        self,
+        queries: List[str],
+        keywords_list: Optional[List[List[str]]] = None,
+        threshold: float = 0.4,
+        top_k: int = 5,
+        result_formatter: Optional[BaseResultFormatter] = None,
+        prefixes: Optional[List[str]] = None,
+        include_doc_ids: Optional[List[str]] = None,
+        exclude_doc_ids: Optional[List[str]] = None,
+        max_results_size: int = 1000,
+        user_id: Optional[str] = None,
+        group_by_query: bool = False
+    ) -> List[List[Dict]]:
+        if user_id is not None:
+            include_doc_ids = self._allowed_ids(user_id)
+
+        capped_top_k = min(top_k, max_results_size)
+
+        raw_batches = await self.search_batch_async(
+            queries, keywords_list, capped_top_k, threshold,
+            prefixes, include_doc_ids, exclude_doc_ids, user_id
+        )
+
+        # Convert each (doc_id, score) list into a List[Dict]
+        per_query_results: List[List[Dict]] = [
+            self._process_search_results(batch, result_formatter)
+            for batch in raw_batches
+        ]
+
+        if group_by_query:
+            # Return as List[List[Dict]]
+            return per_query_results
+
+        # Otherwise, flatten + dedupe + keep best score
+        return self._merge_batches(per_query_results)
+    
+    # -----------------------------------------------------------------
+#  Retrieval_Engine ––– thin wrappers around Hybrid_search
+# -----------------------------------------------------------------
+    def search_batch(
+        self,
+        queries: List[str],
+        keywords_list: Optional[List[List[str]]],
+        top_k: int,
+        threshold: float,
+        prefixes: Optional[List[str]],
+        include_doc_ids: Optional[List[str]],
+        exclude_doc_ids: Optional[List[str]],
+        user_id: Optional[str],
+    ) -> List[List[Tuple[str, float]]]:
+
+        return self.hybrid_search.advanced_search_batch(
+            queries            = queries,
+            keywords_list      = keywords_list,
+            top_n              = top_k,
+            threshold          = threshold,
+            prefixes           = prefixes,
+            include_doc_ids    = include_doc_ids,
+            exclude_doc_ids    = exclude_doc_ids,
+        )
+
+
+    async def search_batch_async(
+        self,
+        queries: List[str],
+        keywords_list: Optional[List[List[str]]],
+        top_k: int,
+        threshold: float,
+        prefixes: Optional[List[str]],
+        include_doc_ids: Optional[List[str]],
+        exclude_doc_ids: Optional[List[str]],
+        user_id: Optional[str],
+    ) -> List[List[Tuple[str, float]]]:
+
+        return await self.hybrid_search.advanced_search_batch_async(
+            queries            = queries,
+            keywords_list      = keywords_list,
+            top_n              = top_k,
+            threshold          = threshold,
+            prefixes           = prefixes,
+            include_doc_ids    = include_doc_ids,
+            exclude_doc_ids    = exclude_doc_ids,
+        )
+
+
+
     def get_nodes(self) -> Optional[DocumentNodes]:
         """Retrieve the nodes."""
         return self.nodes
@@ -1301,3 +1243,31 @@ class Retrieval_Engine:
         self.faiss_wrapper = FAISS_search(self.embedding_model)
         self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
         self.results = []
+
+    # -----------------------------------------------------------------
+    #  internal util – merge & deduplicate
+    # -----------------------------------------------------------------
+    def _merge_batches(self, batches: List[List[Dict]]) -> List[Dict]:
+        """
+        Flatten the `batches` and keep **one** entry per doc-id: the one
+        with the highest score.  Returns a list sorted by score ↓.
+        Each element is the *same dict* produced by `_process_search_results`.
+        """
+        best: Dict[str, Dict] = {}
+
+        for batch in batches:          # outer list == per-query list
+            for item in batch:         # inner list == individual hits
+                doc_id  = item.get("id")
+                score   = item.get("score", 0)
+                if doc_id is None:
+                    continue
+
+                # Keep the item only if it's the first time we see the ID
+                # or it has a *better* score.
+                current_best = best.get(doc_id)
+                if current_best is None or score > current_best["score"]:
+                    best[doc_id] = item
+
+        # turn dict → list and sort by score (descending)
+        return sorted(best.values(), key=lambda x: x["score"], reverse=True)
+

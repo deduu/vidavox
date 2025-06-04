@@ -19,7 +19,8 @@ test*.py
 
 checkpoints/
 
-result_with_keywords.json
-result_without_keywords.json
-result.json
+result_batch_with_keywords.json
+result_batch_without_keywords.json
+result_single_with_keywords.json
+result_single_without_keywords.json
 

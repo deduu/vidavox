@@ -5,6 +5,7 @@ import string
 from typing import List, Set, Optional, Tuple, Dict
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+import numpy as np
 import threading
 import logging
 
@@ -288,6 +289,18 @@ class BM25_search:
             else:
                 logger.info("BM25 is not initialized.")
                 return []
+    
+    # batch search 
+    def get_scores_batch(self, queries: List[str]) -> List[np.ndarray]:
+        # returns one score-array per query (shape = len(corpus))
+        return [np.array(self.get_scores(q)) for q in queries]
+
+    async def async_get_scores_batch(self, queries: List[str]) -> List[np.ndarray]:
+        loop = asyncio.get_running_loop()
+        return await asyncio.gather(*[
+            loop.run_in_executor(None, self.get_scores, q) for q in queries
+        ])
+
 
     def get_top_n_docs(self, query: str, n: int = 5, include_doc_ids: Optional[List[str]] = None, 
                    exclude_doc_ids: Optional[List[str]] = None, include_prefixes: Optional[List[str]] = None,

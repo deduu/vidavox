@@ -116,6 +116,128 @@ class Hybrid_search:
         hybrid_scores = self._calculate_hybrid_scores(bm25_scores_normalized, faiss_scores_normalized)
         results = self._get_top_n_results(filtered_doc_ids, hybrid_scores, top_n, threshold)
         return results
+    
+    def advanced_search_batch(
+    self,
+    queries      : List[str],
+    keywords_list: Optional[List[List[str]]] = None,   # optional per-query keywords
+    top_n        : int  = 5,
+    threshold    : float = 0.53,
+    prefixes     : Optional[List[str]] = None,
+    include_doc_ids: Optional[List[str]] = None,
+    exclude_doc_ids: Optional[List[str]] = None,
+    ) -> List[List[Tuple[str, float]]]:
+        """
+        Perform hybrid search for *each* query in `queries`.
+        Returns a list with one (doc_id, hybrid_score) list per query.
+        """
+        if not queries:
+            return []
+
+        # 1. BM25 & FAISS batch retrieval
+        bm25_batch  = self._get_bm25_results_batch(
+            [" ".join(kws) if kws else "" for kws in (keywords_list or [[]]*len(queries))],
+            top_n, prefixes, include_doc_ids, exclude_doc_ids,
+        )
+        faiss_batch = self._get_faiss_results_batch(
+            queries, top_n, prefixes, include_doc_ids, exclude_doc_ids,
+        )
+
+        # 2. Stitch results per query
+        results_per_query: List[List[Tuple[str, float]]] = []
+        for (bm_scores, bm_ids), (fs_dists, fs_ids) in zip(bm25_batch, faiss_batch):
+
+            bm_dict, fs_dict = self._map_scores_to_doc_ids(
+                bm_ids, bm_scores, fs_ids, fs_dists
+            )
+            all_ids      = sorted(set(bm_ids).union(fs_ids))
+            filtered_ids = self._filter_doc_ids_by_prefixes(all_ids, prefixes)
+            if not filtered_ids:
+                results_per_query.append([])
+                continue
+
+            bm_filt, fs_filt = self._get_filtered_scores(
+                filtered_ids, bm_dict, fs_dict
+            )
+            bm_norm, fs_norm = self._normalize_scores(bm_filt, fs_filt)
+            hybrid           = self._calculate_hybrid_scores(bm_norm, fs_norm)
+            results          = self._get_top_n_results(
+                filtered_ids, hybrid, top_n, threshold
+            )
+            results_per_query.append(results)
+
+        return results_per_query
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    #  Async batch hybrid search
+    # ─────────────────────────────────────────────────────────────────────────────
+    async def advanced_search_batch_async(
+        self,
+        queries      : List[str],
+        keywords_list: Optional[List[List[str]]] = None,   # optional per-query keywords
+        top_n        : int  = 5,
+        threshold    : float = 0.53,
+        prefixes     : Optional[List[str]] = None,
+        include_doc_ids: Optional[List[str]] = None,
+        exclude_doc_ids: Optional[List[str]] = None,
+    ) -> List[List[Tuple[str, float]]]:
+        """
+        Fully asynchronous version of `advanced_search_batch`.
+        Returns one `(doc_id, hybrid_score)` list per query.
+        """
+        if not queries:
+            return []
+
+        # ---------- 1. Batch retrieval (BM25 & FAISS) ----------
+        kw_strings = [
+            " ".join(kws) if kws else ""
+            for kws in (keywords_list or [[]] * len(queries))
+        ]
+
+        bm25_batch, faiss_batch = await asyncio.gather(
+            # BM25
+            self._get_bm25_results_batch_async(
+                kw_strings, top_n,
+                prefixes, include_doc_ids, exclude_doc_ids,
+            ),
+            # FAISS
+            self._get_faiss_results_batch_async(
+                queries, top_n,
+                prefixes, include_doc_ids, exclude_doc_ids,
+            )
+        )
+
+        # ---------- 2. Per-query fusion ----------
+        results_per_query: List[List[Tuple[str, float]]] = []
+        for (bm_scores, bm_ids), (fs_dists, fs_ids) in zip(bm25_batch, faiss_batch):
+
+            bm_dict, fs_dict = await self._map_scores_to_doc_ids_async(
+                bm_ids, bm_scores, fs_ids, fs_dists
+            )
+
+            all_ids      = sorted(set(bm_ids).union(fs_ids))
+            filtered_ids = await self._filter_doc_ids_by_prefixes_async(
+                all_ids, prefixes
+            )
+            if not filtered_ids:
+                results_per_query.append([])
+                continue
+
+            bm_filt, fs_filt = await self._get_filtered_scores_async(
+                filtered_ids, bm_dict, fs_dict
+            )
+            bm_norm, fs_norm = await self._normalize_scores_async(
+                bm_filt, fs_filt
+            )
+            hybrid           = await self._calculate_hybrid_scores_async(
+                bm_norm, fs_norm
+            )
+            results          = await self._get_top_n_results_async(
+                filtered_ids, hybrid, top_n, threshold
+            )
+            results_per_query.append(results)
+
+        return results_per_query
 
     def _dynamic_weighting(self, query_length: int) -> None:
         self.bm25_weight = 0.7 if query_length <= 5 else 0.5
@@ -187,6 +309,69 @@ class Hybrid_search:
             idx = scores.argsort()[-top_n:][::-1]
             return scores[idx], ids[idx]
         return scores, ids
+
+    # ─── inside Hybrid_search ──────────────────────────────────────────
+    def _get_faiss_results_batch(
+        self,
+        queries: List[str],
+        top_n : int,
+        prefixes=None, include_ids=None, exclude_ids=None
+    ) -> List[Tuple[np.ndarray, List[str]]]:
+        id_filter = self._build_faiss_filter(prefixes, include_ids, exclude_ids)
+        k         = top_n or len(self.faiss_search.doc_dict)
+        return self.faiss_search.search_batch(queries, k, id_filter)
+
+    def _get_bm25_results_batch(
+        self,
+        queries : List[str],
+        top_n   : int,
+        prefixes=None, include_ids=None, exclude_ids=None
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        # simple loop – BM25 lacks a true matrix API, but this hides it
+        return [
+            self._get_bm25_results(q, top_n, prefixes, include_ids, exclude_ids)
+            for q in queries
+        ]
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    #  Async helpers – batch FAISS & BM25 retrieval
+    # ─────────────────────────────────────────────────────────────────────────────
+    async def _get_faiss_results_batch_async(
+        self,
+        queries : List[str],
+        top_n   : int,
+        prefixes=None,
+        include_ids=None,
+        exclude_ids=None
+    ) -> List[Tuple[np.ndarray, List[str]]]:
+        """
+        Asynchronous matrix search in FAISS. Uses the engine’s async
+        `search_batch` (added earlier), so the heavy work runs off-thread.
+        """
+        id_filter = self._build_faiss_filter(prefixes, include_ids, exclude_ids)
+        k         = top_n or len(self.faiss_search.doc_dict)
+        return await self.faiss_search.async_search_batch(queries, k, id_filter)
+
+
+    async def _get_bm25_results_batch_async(
+        self,
+        queries : List[str],
+        top_n   : int,
+        prefixes=None,
+        include_ids=None,
+        exclude_ids=None
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        BM25 has no native matrix API, so we spawn one task per query and
+        gather them in parallel.  Each task uses the *existing*
+        `_get_bm25_results_async` single-query helper.
+        """
+        async def one(q: str):
+            return await self._get_bm25_results_async(
+                q, top_n, prefixes, include_ids, exclude_ids
+            )
+
+        return await asyncio.gather(*(one(q) for q in queries))
 
     
     def _build_faiss_filter(self, prefixes, include_ids, exclude_ids):
