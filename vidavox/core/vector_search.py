@@ -18,6 +18,7 @@ from collections import defaultdict
 from vidavox.utils.pretty_logger import pretty_json_log
 from vidavox.utils.doc_tracker import compute_checksum
 from vidavox.utils.script_tracker import log_processing_time
+from vidavox.utils.gpu import clear_cuda_cache
 
 from vidavox.retrieval.persistence_search import AsyncPersistence
 from vidavox.schemas.common import DocItem
@@ -563,6 +564,8 @@ class Retrieval_Engine:
                     run_in_threadpool(_index)        # one thread‑pool hop
                 )
 
+                clear_cuda_cache(min_freed_mb=50)
+
                 logger.info(f"Added {len(doc_ids)} documents to the engine for {user_id}")
                 if self.persistence:
                     self.persistence.queue_docs(docs)
@@ -671,6 +674,7 @@ class Retrieval_Engine:
             self.bm25_wrapper.remove_document(doc_id)
             self.faiss_wrapper.remove_document(doc_id)
             
+            clear_cuda_cache(min_freed_mb=50)
             # Remove from token counter
             self.token_counter.remove_document(doc_id)
             
@@ -697,6 +701,8 @@ class Retrieval_Engine:
         await self.bm25_wrapper.remove_document_async(doc_id)
         await self.faiss_wrapper.remove_document_async(doc_id)
 
+        clear_cuda_cache(min_freed_mb=50)
+
         # Update token counter and document manager
         self.token_counter.remove_document(doc_id)
         self.doc_manager.delete_document(doc_id, user_id)
@@ -719,6 +725,8 @@ class Retrieval_Engine:
         # 2) Batch‐remove from both indices in one call each
         self.bm25_wrapper.remove_documents(valid_to_delete)
         self.faiss_wrapper.remove_documents(valid_to_delete)
+
+        clear_cuda_cache(min_freed_mb=50)
 
         # 3) Remove from token_counter and doc_manager in a loop
         for doc_id in valid_to_delete:
@@ -1151,6 +1159,7 @@ class Retrieval_Engine:
             },
             "token_snapshot": self.token_counter.snapshot().__dict__,
         }
+        clear_cuda_cache(min_freed_mb=50)
         return state_manager.save_state(path, state_data)
 
     def load_state(self, path: str, verbose: bool = False) -> bool:
