@@ -478,54 +478,69 @@ class FAISS_search:
         logger.info(f"Removed document ID: {doc_id}")
         return True
     
-    def remove_documents(self, doc_ids: List[str]) -> List[str]:
+    def remove_documents(self, doc_ids: list[str]) -> list[str]:
         """
-        Remove multiple documents at once. Returns the list of successfully removed IDs.
-        Rebuilds the FAISS index only once after all deletions.
+        Fast, in-place batch delete using faiss.Index.remove_ids.
+        Returns the list of successfully removed doc_ids.
         """
-        removed = []
-        with self.lock:
-            for doc_id in doc_ids:
-                if doc_id in self.doc_dict:
-                    # Remove from dicts
-                    faiss_id = self.id_map.pop(doc_id)
-                    del self.doc_dict[doc_id]
-                    del self.reverse_id_map[faiss_id]
-                    removed.append(doc_id)
-                else:
-                    logger.warning(f"Document ID '{doc_id}' not found; skipping.")
+        removed    : list[str]  = []
+        faiss_ids  : list[int]  = []
 
-        if removed:
-            # Rebuild the index a single time
-            self._rebuild_index()
-            logger.info(f"Batch removed {len(removed)} docs: {removed}")
+        # --- critical section: update Python maps ------------------
+        with self.lock:
+            for did in doc_ids:
+                fid = self.id_map.pop(did, None)
+                if fid is None:
+                    logger.warning("Document ID '%s' not found; skipping.", did)
+                    continue
+                removed.append(did)
+                faiss_ids.append(fid)
+                self.doc_dict.pop(did, None)
+                self.reverse_id_map.pop(fid, None)
+            # NOTE: we do **not** touch next_index_id here – holes are OK.
+
+        # --- heavy FAISS call outside the lock ---------------------
+        if faiss_ids:
+            ids_to_remove = np.array(faiss_ids, dtype="int64")
+            self.index.remove_ids(faiss.IDSelectorBatch(ids_to_remove))
+            logger.info("Batch removed %d docs (in-place).", len(removed))
         else:
-            logger.info("No documents were removed; nothing to rebuild.")
+            logger.info("No documents were removed; nothing to do.")
 
         return removed
 
-    async def async_remove_documents(self, doc_ids: List[str]) -> List[str]:
-        """
-        Asynchronously remove multiple documents and rebuild the index once.
-        Returns the list of removed IDs.
-        """
-        removed = []
-        with self.lock:
-            for doc_id in doc_ids:
-                if doc_id in self.doc_dict:
-                    faiss_id = self.id_map.pop(doc_id)
-                    del self.doc_dict[doc_id]
-                    del self.reverse_id_map[faiss_id]
-                    removed.append(doc_id)
-                else:
-                    logger.warning(f"Document ID '{doc_id}' not found; skipping.")
 
-        if removed:
-            # Offload the rebuild to a threadpool so we don't block the event loop
-            await self._async_rebuild_index()
-            logger.info(f"Batch asynchronously removed {len(removed)} docs: {removed}")
+    async def async_remove_documents(self, doc_ids: list[str]) -> list[str]:
+        """
+        Async wrapper that keeps the event-loop free.
+        """
+        removed   : list[str] = []
+        faiss_ids : list[int] = []
+
+        # ---- critical section ------------------------------------
+        with self.lock:
+            for did in doc_ids:
+                fid = self.id_map.pop(did, None)
+                if fid is None:
+                    logger.warning("Document ID '%s' not found; skipping.", did)
+                    continue
+                removed.append(did)
+                faiss_ids.append(fid)
+                self.doc_dict.pop(did, None)
+                self.reverse_id_map.pop(fid, None)
+
+        # ---- FAISS call off-thread -------------------------------
+        if faiss_ids:
+            ids_to_remove = np.array(faiss_ids, dtype="int64")
+            await asyncio.to_thread(
+                self.index.remove_ids,
+                faiss.IDSelectorBatch(ids_to_remove)
+            )
+            logger.info(
+                "Batch asynchronously removed %d docs (in-place).", len(removed)
+            )
         else:
-            logger.info("No documents were removed asynchronously; nothing to rebuild.")
+            logger.info("No documents were removed asynchronously.")
 
         return removed
 
@@ -1126,3 +1141,49 @@ class FAISS_search:
         searcher.dimension = await searcher.async_get_embedding_dimension()
         searcher.index = faiss.IndexIDMap(faiss.IndexFlatL2(searcher.dimension))
         return searcher
+    
+       
+    async def compact_rebuild(self) -> None:
+        """
+        Rebuild a dense FAISS index from current `doc_dict`.
+        Designed for nightly maintenance – no hot-path callers.
+        """
+        # 1. snapshot shared state quickly
+        with self.lock:
+            if not self.doc_dict:
+                logger.info("Compaction skipped – no documents.")
+                return
+            doc_items = list(self.doc_dict.items())
+            dim       = self.dimension
+
+        # 2. heavy work off the event-loop
+        all_ids, all_texts = zip(*doc_items)
+        embeddings = await asyncio.to_thread(
+            self.embedding_model.encode,
+            all_texts,
+            convert_to_numpy=True
+        )
+        embeddings = embeddings.astype("float32")
+
+        # 3. build brand-new index (still off-thread)
+        new_index = await asyncio.to_thread(
+            self._build_index_from_embeddings,
+            embeddings
+        )
+
+        # 4. swap under lock (tiny critical section)
+        with self.lock:
+            self.index          = new_index
+            self.id_map         = {d: i for i, d in enumerate(all_ids)}
+            self.reverse_id_map = {i: d for i, d in enumerate(all_ids)}
+            self.next_index_id  = len(all_ids)
+
+        logger.info("Nightly compaction finished – %d vectors", len(all_ids))
+
+
+    def _build_index_from_embeddings(self, embs: np.ndarray) -> faiss.IndexIDMap:
+        idx = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+        if embs.size:
+            ids = np.arange(embs.shape[0], dtype="int64")
+            idx.add_with_ids(embs, ids)
+        return idx
