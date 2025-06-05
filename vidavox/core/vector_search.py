@@ -1233,6 +1233,8 @@ class Retrieval_Engine:
                     run_in_threadpool(_index)        # one thread‑pool hop
                 )
 
+                clear_cuda_cache(min_freed_mb=50)
+
             logger.info(
                 "Loaded state: %d documents rebuilt into BM25 & FAISS",
                 len(batch),
