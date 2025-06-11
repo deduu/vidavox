@@ -1,7 +1,9 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
-import threading
+import threading, re
+
+_CHUNK_SUFFIX_RE = re.compile(r"_chunk\d+$")   # matches “…_chunk0”, “…_chunk17”, etc
 
 @dataclass
 class Doc:
@@ -23,6 +25,25 @@ class DocumentManager:
         self.shared_doc_ids: Set[str] = set()  # Tracks documents that belong to all users
         self.lock = threading.RLock()
         self._just_added: Dict[Optional[str], List[str]] = defaultdict(list)
+
+    def unique_parent_ids(
+        self, user_id: Optional[str] = None
+    ) -> List[str]:
+        """
+        Return *deduplicated* parent-document identifiers.
+
+        Assumes every chunk ID ends with “…_chunk<n>”.
+        Example:
+            80c3…_Invoice.pdf_chunk0 → 80c3…_Invoice.pdf
+        """
+        raw_ids = self.doc_ids(user_id)            # existing method = chunk IDs
+        parents: set[str] = set()
+
+        for cid in raw_ids:
+            parent = _CHUNK_SUFFIX_RE.sub("", cid) # strip the suffix
+            parents.add(parent)
+
+        return sorted(parents)
 
     # ---------- INGEST ----------
     def add_document(
