@@ -10,16 +10,16 @@ import threading
 import logging
 
 
-def download_nltk_resources():
-    """
-    Downloads required NLTK resources synchronously.
-    """
-    resources = ['punkt', 'stopwords', 'wordnet', 'omw-1.4']
-    for resource in resources:
-        try:
-            nltk.download(resource, quiet=True)
-        except Exception as e:
-            logger.info(f"Error downloading {resource}: {str(e)}")
+# def download_nltk_resources():
+#     """
+#     Downloads required NLTK resources synchronously.
+#     """
+#     resources = ['punkt', 'stopwords', 'wordnet', 'omw-1.4']
+#     for resource in resources:
+#         try:
+#             nltk.download(resource, quiet=True)
+#         except Exception as e:
+#             logger.info(f"Error downloading {resource}: {str(e)}")
 
 
 # Configure logging
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class BM25_search:
     # Class variable to track if resources have been downloaded
-    nltk_resources_downloaded = False
+    # nltk_resources_downloaded = False
 
     def __init__(self, remove_stopwords: bool = True, perform_lemmatization: bool = False):
         """
@@ -39,9 +39,9 @@ class BM25_search:
         - perform_lemmatization (bool): Whether to perform lemmatization on tokens.
         """
         # Ensure NLTK resources are downloaded only once
-        if not BM25_search.nltk_resources_downloaded:
-            download_nltk_resources()
-            BM25_search.nltk_resources_downloaded = True
+        # if not BM25_search.nltk_resources_downloaded:
+        #     download_nltk_resources()
+        #     BM25_search.nltk_resources_downloaded = True
 
         self.doc_dict: Dict[str, Dict[str, any]] = {}  # {doc_id: {'text': ..., 'tokenized': ...}}
         self.doc_ids: List[str] = []
