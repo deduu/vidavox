@@ -18,7 +18,7 @@ def ensure_nltk_resources():
         try:
             nltk.data.find(res)
         except LookupError:
-            logging.info(f"Downloading {res} → {NLTK_DATA_DIR}")
+            logging.info(f"Downloading {res} ->{NLTK_DATA_DIR}")
             nltk.download(res, download_dir=str(NLTK_DATA_DIR), quiet=True)
 
 
