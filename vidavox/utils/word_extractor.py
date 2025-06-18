@@ -1,6 +1,6 @@
 from keybert import KeyBERT
 from typing import  Optional
-from vidavox.retrieval.faiss_search import FAISS_search
+from vidavox.search.faiss_search import FAISS_search
 
 
 def extract_keywords(

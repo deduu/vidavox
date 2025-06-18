@@ -20,7 +20,7 @@ from vidavox.utils.doc_tracker import compute_checksum
 from vidavox.utils.script_tracker import log_processing_time
 from vidavox.utils.gpu import clear_cuda_cache
 
-from vidavox.retrieval.persistence_search import AsyncPersistence
+from vidavox.search.persistence_search import AsyncPersistence
 from vidavox.schemas.common import DocItem
 
 from vidavox.document.doc_manager import DocumentManager
@@ -106,7 +106,7 @@ class DefaultResultFormatter(BaseResultFormatter):
 import asyncio, os
 from typing import List, Optional, Any, Dict, Tuple, Callable, Union
 
-from vidavox.retrieval import BM25_search, FAISS_search, Hybrid_search, SearchMode
+from vidavox.search import BM25_search, FAISS_search, Hybrid_search, SearchMode
 
 from vidavox.utils.token_counter import TokenCounter
 from vidavox.document import DocumentSplitter, ProcessingConfig, DocumentNodes
