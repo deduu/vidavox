@@ -4,8 +4,8 @@
 import logging
 import asyncio
 import threading
-from typing import List, Tuple, Dict, Optional
-
+from typing import List, Tuple, Dict, Optional, Union
+from itertools import zip_longest
 from starlette.concurrency import run_in_threadpool
 from concurrent.futures import ThreadPoolExecutor
 
@@ -37,14 +37,18 @@ class BatchProcessor:
     
     def process_batch(
         self,
-        docs: List[Tuple[str, str, Dict]],
+        docs: List[Union[Tuple[str, str, Dict], Tuple[str, str, Dict, Optional[str]]]],
         user_id: Optional[str] = "User A"
     ) -> None:
         """Process a batch of documents efficiently."""
         try:
             with self.batch_lock:
+                # pad 3-tuples with a trailing None so everything becomes length-4
+                normalised = [(d + (None,)) if len(d) == 3 else d for d in docs]
+
+                doc_ids, texts, meta_datas, folder_ids = zip_longest(*normalised)
                 # Extract components for batch processing
-                doc_ids, texts, meta_datas = zip(*docs)
+                # doc_ids, texts, meta_datas = zip(*docs)
                 
                 # Update document manager
                 self.doc_manager.add_documents(docs, user_id=user_id)

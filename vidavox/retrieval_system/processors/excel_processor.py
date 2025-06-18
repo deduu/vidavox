@@ -25,6 +25,7 @@ class ExcelProcessor(BaseProcessor):
         self,
         file_path: str,
         doc_id: str,
+        folder_id:str,
         existing_docs: Dict[str, Document],
         text_col: str,
         metadata_cols: Optional[List[str]] = None,
@@ -57,6 +58,7 @@ class ExcelProcessor(BaseProcessor):
                     'file_name': file_name,
                     'row_index': idx,
                     'file_type': 'excel',
+                    'folder_id': folder_id,
                     'checksum': doc_checksum,
                 }
                 

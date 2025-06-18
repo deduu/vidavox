@@ -27,6 +27,7 @@ class BaseProcessor(ABC):
         self,
         file_path: str,
         doc_id: str,
+        folder_id:str,
         existing_docs: Dict[str, Document],
         **kwargs
     ) -> List[Tuple[str, str, Dict]]:

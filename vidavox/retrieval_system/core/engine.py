@@ -251,14 +251,15 @@ class RetrievalEngine:
                 from vidavox.schemas.common import DocItem  # type: ignore
 
                 assert isinstance(item, DocItem)
-                path_str, doc_id, file_url = item.path, item.doc_id, item.url
+                path_str, doc_id, file_url, folder_id  = item.path, item.doc_id, item.url, item.folder_id
 
-                logger.info(f"Processing item as DocItem: path_str='{path_str}', doc_id='{doc_id}', file_url='{file_url}'")
+                logger.info(f"Processing item as DocItem: path_str='{path_str}', doc_id='{doc_id}', file_url='{file_url}, folder_id='{folder_id}'")
             # ----------------------------------------------------------------- choose processor
             processor = self._select_processor(path_str)
             try:
                 kwargs: Dict = {
                     "doc_id": doc_id or Path(path_str).stem,
+                    "folder_id": folder_id,
                     "existing_docs": existing_docs,
                     "file_url": file_url,
                     "config": config,

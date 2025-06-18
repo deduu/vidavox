@@ -30,6 +30,7 @@ class StandardFileProcessor(BaseProcessor):
         self,
         file_path: str,
         doc_id: str,
+        folder_id:str,
         existing_docs: Dict[str, Document],
         file_url: Optional[str] = None,
         config: Optional[ProcessingConfig] = None,
@@ -62,6 +63,7 @@ class StandardFileProcessor(BaseProcessor):
                 meta = dict(base_meta)  # copy base metadata
                 meta["file_type"] = Path(file_path).suffix.lower().lstrip(".")
                 meta["url"] = file_url
+                meta["folder_id"] = folder_id
                 
                 # Combine with document-specific metadata
                 combined_meta = {**meta, **doc.metadata}
