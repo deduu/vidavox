@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-import pickle
+import pickle, json
 from tqdm import tqdm
 
 
@@ -121,6 +121,52 @@ class RetrievalEngine:
             "folders": folders,  # <─ NEW
             "files": files,      # <─ NEW
         }
+
+    # ---------------------------------------------------------------------
+    #  Index-only persistence  (documents still live in DB via AsyncPersistence)
+    # ---------------------------------------------------------------------
+    def save_indices(self, dir_: str | Path) -> None:
+        """
+        Save FAISS + BM25 + a tiny meta.json atomically into *dir_*.
+        """
+        dir_ = Path(dir_)
+        dir_.mkdir(parents=True, exist_ok=True)
+
+        (dir_ / "meta.json").write_text(
+            json.dumps(
+                {
+                    "embedding_model": self.embedding_model,
+                    "docs": len(self.doc_manager.documents),
+                },
+                indent=2,
+            )
+        )
+        self.faiss_wrapper.save(dir_ / "faiss.index")
+        self.bm25_wrapper.save(dir_ / "bm25.pkl")
+        logger.info("Indices saved → %s", dir_)
+
+
+    def load_indices(self, dir_: str | Path) -> None:
+        """
+        Rehydrate FAISS & BM25 _and_ rebuild doc_manager / token_counter so that
+        later `.query()` calls can format results correctly.
+        """
+        dir_ = Path(dir_)
+        self.faiss_wrapper.load(dir_ / "faiss.index")
+        self.bm25_wrapper.load(dir_ / "bm25.pkl")
+
+
+        for doc_id, info in self.bm25_wrapper.doc_dict.items():
+            text = info["text"] or ""             # text might be empty if you saved only tokens
+            self.doc_manager.add_document(doc_id, text, meta_data={}, user_id=None)
+            self.token_counter.add_document(doc_id, text, user_id=None)
+        # ──────────────────────────────────────────────────────────────────────
+
+        logger.info(
+            "Indices loaded ← %s  (docs=%d)", dir_, len(self.doc_manager.documents)
+        )
+
+
 
     # Public
     def save_state(self, path: str | Path, *, fmt: str = "json") -> bool:
@@ -246,7 +292,7 @@ class RetrievalEngine:
         for item in iterator:
             # ----------------------------------------------------------------- normalise input
             if isinstance(item, str):
-                path_str, doc_id, file_url = item, None, None
+                path_str, doc_id, file_url, folder_id = item, None, None, None
             else:  # DocItem assumed – import lazily to avoid hard dep if caller doesn’t use them
                 from vidavox.schemas.common import DocItem  # type: ignore
 

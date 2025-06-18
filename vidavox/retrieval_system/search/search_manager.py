@@ -180,7 +180,8 @@ class SearchManager:
     ) -> List[Dict]:
         """Process search results into formatted output."""
         if not results:
-            return [{"id": "None.", "url": "None.", "text": None}]
+            return [{"id": "None.", "url": "None.", "text": None, "score": 0.0}]
+
         
         formatter = result_formatter or CustomResultFormatter()
         seen, output = set(), []
@@ -195,7 +196,7 @@ class SearchManager:
             search_result = SearchResult(doc_id, doc_obj.text, doc_obj.meta_data, score)
             output.append(formatter.format(search_result))
         
-        return output or [{"id": "None.", "url": "None.", "text": None}]
+        return output or [{"id": "None.", "url": "None.", "text": None, "score": 0.0}]
     
     def merge_batches(self, batches: List[List[Dict]]) -> List[Dict]:
         """Merge and deduplicate batch results, keeping best score per document."""

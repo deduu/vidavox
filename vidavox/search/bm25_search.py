@@ -5,22 +5,16 @@ import string
 from typing import List, Set, Optional, Tuple, Dict
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+from pathlib import Path
 import numpy as np
 import threading
 import logging
+import pickle, gzip
+import re
+from typing import Any, Dict
+from vidavox.utils.ntlk_setup import ensure_nltk_resources
 
-
-# def download_nltk_resources():
-#     """
-#     Downloads required NLTK resources synchronously.
-#     """
-#     resources = ['punkt', 'stopwords', 'wordnet', 'omw-1.4']
-#     for resource in resources:
-#         try:
-#             nltk.download(resource, quiet=True)
-#         except Exception as e:
-#             logger.info(f"Error downloading {resource}: {str(e)}")
-
+_TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class BM25_search:
     # Class variable to track if resources have been downloaded
-    # nltk_resources_downloaded = False
+    nltk_resources_downloaded = False
 
     def __init__(self, remove_stopwords: bool = True, perform_lemmatization: bool = False):
         """
@@ -39,9 +33,10 @@ class BM25_search:
         - perform_lemmatization (bool): Whether to perform lemmatization on tokens.
         """
         # Ensure NLTK resources are downloaded only once
-        # if not BM25_search.nltk_resources_downloaded:
-        #     download_nltk_resources()
-        #     BM25_search.nltk_resources_downloaded = True
+        if not BM25_search.nltk_resources_downloaded:
+            ensure_nltk_resources()
+            # download_nltk_resources()
+            BM25_search.nltk_resources_downloaded = True
 
         self.doc_dict: Dict[str, Dict[str, any]] = {}  # {doc_id: {'text': ..., 'tokenized': ...}}
         self.doc_ids: List[str] = []
@@ -52,6 +47,64 @@ class BM25_search:
         self.stop_words: Set[str] = set(stopwords.words('english')) if remove_stopwords else set()
         self.lemmatizer = WordNetLemmatizer() if perform_lemmatization else None
         self.lock = threading.Lock()
+    
+    # -----------------------------------------------------------------------
+    #  Persistence helpers
+    # -----------------------------------------------------------------------
+    def _snapshot(self) -> Dict[str, Any]:
+        """
+        Build a pure-python dict that fully reconstructs this BM25_search.
+        """
+        return {
+            "doc_dict":             self.doc_dict,            # {id: {text, tokenized}}
+            "doc_ids":              self.doc_ids,             # keep corpus order
+            "remove_stopwords":     self.remove_stopwords,
+            "perform_lemmatization": self.perform_lemmatization,
+        }
+
+    # PUBLIC
+    def save(self, path: str | Path) -> None:
+        """
+        Persist the whole BM25 wrapper to *path* (.pkl.gz, written atomically).
+
+        We pickle only *our* data; Rank-BM25 structures are rebuilt on load.
+        """
+        path = Path(path)
+        tmp  = path.with_suffix(".tmp")
+
+        with gzip.open(tmp, "wb") as fp:
+            pickle.dump(self._snapshot(), fp, protocol=pickle.HIGHEST_PROTOCOL)
+
+        tmp.replace(path)          # atomic rename ⇒ crash-safe
+        logger.info("BM25 saved ➜ %s", path)
+
+    # PUBLIC
+    def load(self, path: str | Path) -> None:
+        """
+        Restore wrapper from *path*.  Rebuilds the Rank-BM25 index.
+        """
+        path = Path(path)
+        if not path.exists():
+            logger.warning("load(): %s does not exist — nothing loaded", path)
+            return
+
+        with gzip.open(path, "rb") as fp:
+            data: Dict[str, Any] = pickle.load(fp)
+
+        # --- restore config first
+        self.remove_stopwords      = data["remove_stopwords"]
+        self.perform_lemmatization = data["perform_lemmatization"]
+        # leave stop-words / lemmatizer as they were; or re-create if you prefer
+
+        # --- restore corpus
+        self.doc_dict = data["doc_dict"]
+        self.doc_ids  = data["doc_ids"]
+
+        # --- rebuild Rank-BM25
+        self.update_bm25()
+
+        logger.info("BM25 loaded  ← %s (%d docs)", path, len(self.doc_ids))
+
 
     def preprocess(self, text: str) -> List[str]:
         """
@@ -68,7 +121,10 @@ class BM25_search:
             return []
             
         text = text.lower().translate(str.maketrans('', '', string.punctuation))
-        tokens = nltk.word_tokenize(text)
+        try:
+            tokens = nltk.word_tokenize(text)
+        except LookupError:                        # punkt not found
+            tokens = _TOKEN_RE.findall(text)       # regex fallback
         
         if self.remove_stopwords:
             tokens = [token for token in tokens if token not in self.stop_words]

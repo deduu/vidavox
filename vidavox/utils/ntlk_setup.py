@@ -28,3 +28,21 @@ def ensure_nltk_resources():
 # async def lifespan(app: FastAPI):
 #     ensure_nltk_resources()     # happens once, before workers start
 #     ...
+# utils/nltk_bootstrap.py
+# import nltk
+# from nltk import data as _data
+# import logging
+
+# logger = logging.getLogger(__name__)
+
+# def ensure_nltk_resources() -> None:
+#     for res, path in (
+#         ("punkt", "tokenizers/punkt"),
+#         ("stopwords", "corpora/stopwords"),
+#         ("wordnet", "corpora/wordnet"),
+#     ):
+#         try:
+#             _data.find(path)
+#         except LookupError:
+#             logger.info("Downloading NLTK resource %s …", res)
+#             nltk.download(res, quiet=True)
