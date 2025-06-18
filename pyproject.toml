@@ -15,7 +15,13 @@ classifiers = [
     "Operating System :: OS Independent"
 ]
 
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
+
 [tool.poetry.dependencies]
+torch = { version = "2.6.0", source = "pytorch" }
 python = ">=3.11,<3.13"
 numpy = "1.26.4"
 scikit-learn = "1.6.1"
@@ -138,6 +144,9 @@ rapidocr-onnxruntime = "^1.4.4"
 starlette = "^0.46.2"
 pypdf2 = "^3.0.1"
 pymupdf = "^1.26.0"
+
+
+
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"
