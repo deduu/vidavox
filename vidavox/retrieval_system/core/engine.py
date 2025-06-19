@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-import pickle, json
+import pickle, json, gzip
 from tqdm import tqdm
 
 
@@ -126,44 +126,65 @@ class RetrievalEngine:
     #  Index-only persistence  (documents still live in DB via AsyncPersistence)
     # ---------------------------------------------------------------------
     def save_indices(self, dir_: str | Path) -> None:
-        """
-        Save FAISS + BM25 + a tiny meta.json atomically into *dir_*.
-        """
         dir_ = Path(dir_)
         dir_.mkdir(parents=True, exist_ok=True)
 
+        # Serialize docs INCLUDING owner
+        docs_blob = gzip.compress(pickle.dumps(
+            {
+                doc_id: (doc.text, doc.meta_data)
+                for doc_id, doc in self.doc_manager.documents.items()
+            },
+            protocol=pickle.HIGHEST_PROTOCOL,
+        ))
+        (dir_ / "docs.pkl.gz").write_bytes(docs_blob)
+
+        # Search indices
+        self.faiss_wrapper.save(dir_)
+        self.bm25_wrapper.save(dir_)   
+
+        # tiny meta (good place for model version)
         (dir_ / "meta.json").write_text(
             json.dumps(
-                {
-                    "embedding_model": self.embedding_model,
-                    "docs": len(self.doc_manager.documents),
-                },
+                {"embedding_model": self.embedding_model},
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
-        self.faiss_wrapper.save(dir_ / "faiss.index")
-        self.bm25_wrapper.save(dir_ / "bm25.pkl")
         logger.info("Indices saved → %s", dir_)
 
 
+    
     def load_indices(self, dir_: str | Path) -> None:
-        """
-        Rehydrate FAISS & BM25 _and_ rebuild doc_manager / token_counter so that
-        later `.query()` calls can format results correctly.
-        """
         dir_ = Path(dir_)
-        self.faiss_wrapper.load(dir_ / "faiss.index")
-        self.bm25_wrapper.load(dir_ / "bm25.pkl")
 
+        # 1) search indices
+        self.faiss_wrapper.load(dir_)
+        self.bm25_wrapper.load(dir_)
 
-        for doc_id, info in self.bm25_wrapper.doc_dict.items():
-            text = info["text"] or ""             # text might be empty if you saved only tokens
-            self.doc_manager.add_document(doc_id, text, meta_data={}, user_id=None)
-            self.token_counter.add_document(doc_id, text, user_id=None)
-        # ──────────────────────────────────────────────────────────────────────
+        # 2) documents
+        docs_file = dir_ / "docs.pkl.gz"
+        if docs_file.exists():
+            raw = pickle.loads(gzip.decompress(docs_file.read_bytes()))
+              # populate FAISS.doc_dict only if you need it
+            self.faiss_wrapper.doc_dict.update(
+                {doc_id: text for doc_id, (text, _meta) in raw.items()}
+            )
+            for doc_id, payload in raw.items():
+                # Accept 2- or 3-tuple
+                if len(payload) == 3:
+                    text, meta, owner = payload
+                else:                       # old file
+                    text, meta = payload
+                    owner = meta.get("owner_id")     # may be None
+                self.doc_manager.add_document(doc_id, text, meta, user_id=owner)
+                self.token_counter.add_document(doc_id, text, user_id=owner)
 
         logger.info(
-            "Indices loaded ← %s  (docs=%d)", dir_, len(self.doc_manager.documents)
+            "Indices loaded ← %s  (docs=%d, owners=%s)",
+            dir_,
+            len(self.doc_manager.documents),
+            {u: len(s) for u, s in self.doc_manager.user_to_doc_ids.items()},
         )
 
 

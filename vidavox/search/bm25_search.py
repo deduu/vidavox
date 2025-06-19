@@ -21,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class BM25_search:
+    BM25_FILENAME = "bm25.pkl.gz"  
     # Class variable to track if resources have been downloaded
     nltk_resources_downloaded = False
 
@@ -53,57 +54,83 @@ class BM25_search:
     # -----------------------------------------------------------------------
     def _snapshot(self) -> Dict[str, Any]:
         """
-        Build a pure-python dict that fully reconstructs this BM25_search.
+        Build a pure-python dict that fully reconstructs the BM25 index,
+        without duplicating the raw texts that live in docs.pkl.gz.
         """
+        tokenised_corpus = [self.doc_dict[d]["tokenized"] for d in self.doc_ids]
+
         return {
-            "doc_dict":             self.doc_dict,            # {id: {text, tokenized}}
-            "doc_ids":              self.doc_ids,             # keep corpus order
-            "remove_stopwords":     self.remove_stopwords,
+            "doc_ids":               self.doc_ids,             # keep order
+            "corpus":                tokenised_corpus,         # list[list[str]]
+            "remove_stopwords":      self.remove_stopwords,
             "perform_lemmatization": self.perform_lemmatization,
         }
 
-    # PUBLIC
     def save(self, path: str | Path) -> None:
         """
-        Persist the whole BM25 wrapper to *path* (.pkl.gz, written atomically).
+        Persist the BM25 wrapper.
 
-        We pickle only *our* data; Rank-BM25 structures are rebuilt on load.
+        • If *path* is a directory, file is <dir>/bm25.pkl.gz  
+        • If *path* looks like a file, use it exactly (legacy behaviour).
         """
         path = Path(path)
-        tmp  = path.with_suffix(".tmp")
+        if path.is_dir():
+            path.mkdir(parents=True, exist_ok=True)
+            file_path = path / self.BM25_FILENAME
+        else:
+            file_path = path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
 
+        tmp = file_path.with_suffix(".tmp")          # atomic swap
         with gzip.open(tmp, "wb") as fp:
             pickle.dump(self._snapshot(), fp, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(file_path)
 
-        tmp.replace(path)          # atomic rename ⇒ crash-safe
-        logger.info("BM25 saved ➜ %s", path)
+        logger.info("BM25 saved ➜ %s", file_path)
 
-    # PUBLIC
-    def load(self, path: str | Path) -> None:
+
+    def load(
+        self,
+        path: str | Path,
+        *,
+        external_doc_dict: Optional[Dict[str, str]] = None   # raw texts from docs.pkl.gz
+    ) -> None:
         """
-        Restore wrapper from *path*.  Rebuilds the Rank-BM25 index.
+        Restore wrapper and rebuild Rank-BM25.
+
+        Give *path* as a directory **or** a file.
+        Pass `external_doc_dict` (id ➜ raw text) to avoid storing raw text twice.
         """
         path = Path(path)
-        if not path.exists():
-            logger.warning("load(): %s does not exist — nothing loaded", path)
+        file_path = (path / self.BM25_FILENAME) if path.is_dir() else path
+        if not file_path.exists():
+            logger.warning("BM25 load(): %s does not exist — nothing loaded", file_path)
             return
 
-        with gzip.open(path, "rb") as fp:
-            data: Dict[str, Any] = pickle.load(fp)
+        with gzip.open(file_path, "rb") as fp:
+            data = pickle.load(fp)
 
-        # --- restore config first
+        # --- config -------------------------------------------------
         self.remove_stopwords      = data["remove_stopwords"]
         self.perform_lemmatization = data["perform_lemmatization"]
-        # leave stop-words / lemmatizer as they were; or re-create if you prefer
 
-        # --- restore corpus
-        self.doc_dict = data["doc_dict"]
-        self.doc_ids  = data["doc_ids"]
+        # --- corpus & ids ------------------------------------------
+        self.doc_ids = data["doc_ids"]
+        corpus       = data["corpus"]            # already tokenised
 
-        # --- rebuild Rank-BM25
-        self.update_bm25()
+        # --- rebuild doc_dict (raw text comes from external map) ---
+        self.doc_dict = {}
+        for doc_id, toks in zip(self.doc_ids, corpus):
+            raw_text = ""
+            if external_doc_dict is not None:
+                raw_text = external_doc_dict.get(doc_id, "")
+            self.doc_dict[doc_id] = {"text": raw_text, "tokenized": toks}
 
-        logger.info("BM25 loaded  ← %s (%d docs)", path, len(self.doc_ids))
+        # --- rebuild Rank-BM25 instantly ---------------------------
+        self.bm25 = BM25Okapi(corpus)
+
+        logger.info("BM25 loaded ← %s (%d docs)", file_path, len(self.doc_ids))
+
 
 
     def preprocess(self, text: str) -> List[str]:

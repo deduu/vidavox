@@ -8,6 +8,7 @@ import faiss
 import numpy as np
 import torch
 import pickle, gzip
+import json
 
 from vidavox.utils.script_tracker import log_processing_time
 
@@ -255,7 +256,7 @@ class FAISS_search:
                 {
                     "id_map":         self.id_map,
                     "reverse_id_map": self.reverse_id_map,
-                    "next_index_id":  self.next_index_id,          # if you track one
+                    "next_index_id":  self.next_index_id,  
                 },
                 fp,
                 protocol=pickle.HIGHEST_PROTOCOL,
@@ -263,9 +264,6 @@ class FAISS_search:
         logger.info("FAISS saved → %s", path)
 
     def load(self, path: str | Path) -> None:
-        """
-        Restore index + mappings.
-        """
         path = Path(path)
         if not (path / "faiss.index").exists():
             logger.warning("FAISS load: %s missing – nothing restored", path)
@@ -279,16 +277,8 @@ class FAISS_search:
                 data = pickle.load(fp)
             self.id_map         = data["id_map"]
             self.reverse_id_map = data["reverse_id_map"]
-            self.next_index_id        = data.get("next_index_id", max(self.id_map.values()) + 1)
-        else:
-            # Rebuild maps from the index itself (slower but works)
-            self.id_map = {}
-            self.reverse_id_map = {}
-            for idx, fid in enumerate(self.index.id_map):
-                self.reverse_id_map[fid] = list(self.doc_dict.keys())[idx]
-                self.id_map[self.reverse_id_map[fid]] = fid
-            self.next_index_id = max(self.id_map.values(), default=0) + 1
-
+            self.next_index_id  = data.get("next_index_id",
+                                        max(self.id_map.values(), default=-1) + 1)
         logger.info("FAISS loaded ← %s (%d vectors)", path, len(self.id_map))
 
     def _initialize_embedding_model(
@@ -1101,7 +1091,9 @@ class FAISS_search:
         Returns:
             An IDFilter that can be passed to search methods
         """
-        return PrefixFilter(prefixes, set(self.doc_dict.keys()), self.id_map)
+        return PrefixFilter(prefixes,
+                        set(self.id_map.keys()),   # <── changed
+                        self.id_map)
     
     def create_custom_filter(self, filter_fn: Callable[[str], bool]) -> IDFilter:
         """
