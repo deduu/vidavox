@@ -57,6 +57,7 @@ class DocumentManager:
                 self.user_to_doc_ids[user_id].add(doc_id)
             else:
                 self.shared_doc_ids.add(doc_id)
+            self._just_added[user_id].clear()
             self._just_added[user_id].append(doc_id)
 
     def add_documents(
@@ -87,6 +88,7 @@ class DocumentManager:
                 self.user_to_doc_ids[user_id].update(newly_added)
             else:
                 self.shared_doc_ids.update(newly_added)
+            self._just_added[user_id].clear()
             self._just_added[user_id].extend(newly_added)
 
     # ---------- READ ----------
@@ -141,6 +143,41 @@ class DocumentManager:
                 result[uid] = [self.documents[d] for d in ids]
             result[None] = [self.documents[d] for d in self.shared_doc_ids]
             return result
+        
+    def get_doc_ids_by_prefix(
+        self,
+        user_id: Optional[str],
+        prefixes: List[str]
+    ) -> List[str]:
+        """
+        Return a list of doc_ids owned by the user that start with any of the given prefixes.
+        """
+        with self.lock:
+            all_ids = self.user_to_doc_ids.get(user_id, set()) if user_id else self.shared_doc_ids
+            filtered_ids = [
+                doc_id for doc_id in all_ids
+                if any(doc_id.startswith(prefix) for prefix in prefixes)
+            ]
+            return sorted(filtered_ids)
+
+    def get_documents_by_user_and_prefixes(
+        self,
+        user_id: str,
+        prefixes: List[str],
+    ) -> List[Doc]:
+        with self.lock:
+            user_doc_ids = self.user_to_doc_ids.get(user_id, set())
+            matched_doc_ids = [
+                doc_id
+                for doc_id in user_doc_ids
+                if any(doc_id.startswith(prefix) for prefix in prefixes)
+            ]
+            return [self.documents[doc_id] for doc_id in matched_doc_ids if doc_id in self.documents]
+
+        
+    def get_documents_by_ids(self, doc_ids: List[str]) -> List[Doc]:
+        with self.lock:
+            return [self.documents[doc_id] for doc_id in doc_ids if doc_id in self.documents]
 
     # ---------- DELETE ----------
     def _delete_document_nolock(self, doc_id: str, user_id: Optional[str] = None) -> bool:
