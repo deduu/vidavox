@@ -31,6 +31,7 @@ from ..formatters.base import BaseResultFormatter
 from ..formatters.custom import CustomResultFormatter
 from ..core.components import SearchResult  # re‑exported from sibling
 from ..persistence.state_manager import StateManager
+from ..utils.process_failure import ProcessFailure
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class RetrievalEngine:
             ),
             encoding="utf-8",
         )
-        logger.info("Indices saved → %s", dir_)
+        logger.info("Indices saved -> %s", dir_)
 
 
     
@@ -179,9 +180,9 @@ class RetrievalEngine:
                     owner = meta.get("owner_id")     # may be None
                 self.doc_manager.add_document(doc_id, text, meta, user_id=owner)
                 self.token_counter.add_document(doc_id, text, user_id=owner)
-
+        
         logger.info(
-            "Indices loaded ← %s  (docs=%d, owners=%s)",
+            "Indices loaded <- %s  (docs=%d, owners=%s)",
             dir_,
             len(self.doc_manager.documents),
             {u: len(s) for u, s in self.doc_manager.user_to_doc_ids.items()},
@@ -233,9 +234,6 @@ class RetrievalEngine:
     # --------------------------- internal restore -----------------------------
    
     def _restore_from_state(self, data: Dict) -> None:
-        # # Reset managers
-        # self.doc_manager = DocumentManager()
-        # self.token_counter = TokenCounter()
 
         # Re-add documents & tokens
         for did, (text, meta) in data["documents"].items():
@@ -288,7 +286,7 @@ class RetrievalEngine:
         return self.doc_manager.get_user_docs(user_id)
 
     # ----------------------------------------------------------------------- ingestion
-    def from_paths(
+    async def from_paths(
         self,
         sources: Sequence[Union[str, 'DocItem']],  # noqa: F821 – DocItem comes from caller’s lib
         *,
@@ -299,6 +297,7 @@ class RetrievalEngine:
         metadata_cols: Optional[List[str]] = None,
         use_recursive: bool = True,
         user_id: Optional[str] = "User A",
+        failures: Optional[List[ProcessFailure]] = None,
     ) -> "RetrievalEngine":
         """Ingest the given paths (or DocItems) into the engine, respecting incremental logic."""
         metadata_cols = metadata_cols or []
@@ -338,6 +337,7 @@ class RetrievalEngine:
                 docs_from_file = processor.process(path_str, **kwargs)  
             except Exception as e:
                 logger.exception("Failed to process %s: %s", path_str, e)
+                failures.append(ProcessFailure(path_str, str(e)))
                 continue
 
             if not docs_from_file:
@@ -345,12 +345,14 @@ class RetrievalEngine:
 
             batch_docs.extend(docs_from_file)
             if len(batch_docs) >= BATCH_SIZE:
-                self.batch_processor.process_batch(batch_docs, user_id=user_id)
+                await self.batch_processor.process_batch(batch_docs, user_id=user_id)
                 batch_docs = []
 
         # flush remainder ------------------------------------------------------------
         if batch_docs:
-            self.batch_processor.process_batch(batch_docs, user_id=user_id)
+            await self.batch_processor.process_batch(batch_docs, user_id=user_id)
+        
+        self.last_failures = failures 
 
         return self
 
@@ -549,7 +551,7 @@ class RetrievalEngine:
     async def search_async(self, *args, **kwds):
         return await self.search_mgr.search_async(*args, **kwds)
     
-        # -----------------------------------------------------------------
+    # -----------------------------------------------------------------
     # Legacy convenience wrappers – feel free to delete once migrated
     # -----------------------------------------------------------------
     def retrieve(self, *args, **kwargs):

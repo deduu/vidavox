@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class BatchProcessor:
     """Handles batch processing of documents."""
-    
+
     def __init__(
         self,
         doc_manager: DocumentManager,
@@ -34,8 +34,8 @@ class BatchProcessor:
         self.faiss_wrapper = faiss_wrapper
         self.persistence = persistence
         self.batch_lock = threading.Lock()
-    
-    def process_batch(
+
+    async def process_batch(
         self,
         docs: List[Union[Tuple[str, str, Dict], Tuple[str, str, Dict, Optional[str]]]],
         user_id: Optional[str] = "User A"
@@ -44,19 +44,22 @@ class BatchProcessor:
         try:
             with self.batch_lock:
                 # pad 3-tuples with a trailing None so everything becomes length-4
-                normalised = [(d + (None,)) if len(d) == 3 else d for d in docs]
+                normalised = [(d + (None,)) if len(d) ==
+                              3 else d for d in docs]
 
-                doc_ids, texts, meta_datas, folder_ids = zip_longest(*normalised)
+                doc_ids, texts, meta_datas, folder_ids = zip_longest(
+                    *normalised)
                 # Extract components for batch processing
                 # doc_ids, texts, meta_datas = zip(*docs)
-                
+
                 # Update document manager
                 self.doc_manager.add_documents(docs, user_id=user_id)
-                
+
                 # Update token counter
                 for doc_id, text in zip(doc_ids, texts):
-                    self.token_counter.add_document(doc_id, text, user_id=user_id)
-                
+                    self.token_counter.add_document(
+                        doc_id, text, user_id=user_id)
+
                 # CPU-bound indexing off the event loop
                 def _index():
                     # BM25 is pure-python but fast; FAISS is the expensive bit
@@ -65,7 +68,7 @@ class BatchProcessor:
                         list(zip(doc_ids, texts)), return_vectors=True
                     )
                     return inserted
-                
+
                 # inserted_vectors = asyncio.run(
                 #     run_in_threadpool(_index)  # one thread-pool hop
                 # )
@@ -77,26 +80,27 @@ class BatchProcessor:
                         # Run in thread pool without asyncio.run()
                         with ThreadPoolExecutor() as executor:
                             inserted_vectors = executor.submit(_index).result()
-                  
+
                 except RuntimeError:
                     # No running event loop, safe to use asyncio.run()
                     inserted_vectors = asyncio.run(run_in_threadpool(_index))
-                
+
                 clear_cuda_cache(min_freed_mb=50)
-                
-                logger.info(f"Added {len(doc_ids)} documents to the engine for {user_id}")
-                
+
+                logger.info(
+                    f"Added {len(doc_ids)} documents to the engine for {user_id}")
+
                 # Handle persistence if available
                 if self.persistence:
                     self._handle_persistence(docs, doc_ids, inserted_vectors)
-                
+
                 # Update file modification time index if applicable
                 self._update_mtime_index(docs)
-        
+
         except Exception as e:
             logger.error(f"Failed to process document batch: {e}")
             raise
-    
+
     def _handle_persistence(
         self,
         docs: List[Tuple[str, str, Dict]],
@@ -106,32 +110,35 @@ class BatchProcessor:
         """Handle persistence operations for the batch."""
         try:
             self.persistence.queue_docs(docs)
-            logger.info(f"Persisted {len(doc_ids)} documents to the persistence store.")
-            
+            logger.info(
+                f"Persisted {len(doc_ids)} documents to the persistence store.")
+
             if inserted_vectors:  # never None when return_vectors=True
                 self.persistence.queue_vectors(inserted_vectors)
-                logger.info(f"Persisted {len(inserted_vectors)} FAISS vectors to the persistence store.")
-            
-            self.persistence.queue_bm25(self.bm25_wrapper.get_multiple_doc_terms(doc_ids))
+                logger.info(
+                    f"Persisted {len(inserted_vectors)} FAISS vectors to the persistence store.")
+
+            self.persistence.queue_bm25(
+                self.bm25_wrapper.get_multiple_doc_terms(doc_ids))
             self.persistence.queue_token_counts([
                 (d, self.token_counter.get_doc_tokens(d)) for d in doc_ids
             ])
-            
+
         except Exception as e:
             logger.error(f"Failed to handle persistence: {e}")
-    
+
     def _update_mtime_index(self, docs: List[Tuple[str, str, Dict]]) -> None:
         """Update file modification time index."""
         if not docs:
             return
-            
+
         try:
             _, _, first_meta = docs[0]
             file_name = first_meta.get("file_name")
             mtime = first_meta.get("modification_time")
-            
+
             if file_name and mtime and hasattr(self, '_file_mtime_index'):
                 self._file_mtime_index[file_name] = mtime
-                
+
         except Exception as e:
             logger.warning(f"Failed to update mtime index: {e}")

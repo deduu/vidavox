@@ -1,309 +1,360 @@
+"""
+Multi-provider Chat-LLM client
+
+Supported providers
+-------------------
+* OpenAI
+* DeepSeek
+* Sonnet
+* Ollama (local)
+* Groq (OpenAI-style)
+* Gemini 2 ( Google Generative Language API – flash/pro models )
+
+Usage
+-----
+client = Client("gemini:gemini-2.0-flash")
+resp    = client.chat.completions.create(
+             messages=[{"role": "user", "content": "Explain how AI works"}],
+             temperature=0.3
+         )
+print(resp)   # → assistant text, OpenAI-style
+"""
+
 import os
-import requests
 import base64
+import requests
 from dotenv import load_dotenv
 from vidavox.utils.script_tracker import log_processing_time
 
-# Load environment variables from .env file
+# --------------------------------------------------------------------------- #
+#  Configuration                                                              #
+# --------------------------------------------------------------------------- #
+
 load_dotenv()
 
-# Mapping of provider names to their chat completion endpoints
 PROVIDER_ENDPOINTS = {
     "openai":   "https://api.openai.com/v1/chat/completions",
     "deepseek": "https://api.deepseek.ai/v1/chat/completions",
     "sonnet":   "https://api.sonnet.ai/v1/chat/completions",
     "ollama":   "http://localhost:11434/api/generate",
+    "groq":     "https://api.groq.com/openai/v1/chat/completions",
+    # Gemini needs the model name appended later:  <base>/<model>:generateContent
+    "gemini":   "https://generativelanguage.googleapis.com/v1beta/models/",
 }
 
-# Mapping of provider names to their environment variable names
 API_KEY_ENV_VARS = {
-    "openai": "OPENAI_API_KEY",
+    "openai":   "OPENAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
-    "sonnet": "SONNET_API_KEY"
+    "sonnet":   "SONNET_API_KEY",
+    "gemini":   "GEMINI_API_KEY",       # ⬅️ added
 }
+
+# --------------------------------------------------------------------------- #
+#  Public façade                                                              #
+# --------------------------------------------------------------------------- #
+
 
 class Client:
-    def __init__(self, model, api_key=None):
-        """
-        Initialize the Client with a combined model string in the format "provider:model_name"
-        e.g., "openai:gpt-4.0"
-        
-        :param model: A string in the format "provider:model_name"
-        :param api_key: Optional API key for the specified provider. If not provided,
-                       will attempt to load from environment variables.
-        """
+    """
+    Example:  Client("openai:gpt-4o-mini")   or   Client("gemini:gemini-2.0-pro")
+    """
+
+    def __init__(self, model: str, api_key: str | None = None):
         try:
             provider, model_name = model.split(":", 1)
         except ValueError:
-            raise ValueError("Model parameter must be in the format 'provider:model_name'")
-        
+            raise ValueError("Model must be '<provider>:<model_name>'")
+
         self.provider = provider.lower()
         self.default_model = model_name.strip()
-        
-        # If API key is not provided, try to get it from environment variables
-        # Skip API key validation for Ollama
+
+        # Ollama ≠ API key
         if self.provider == "ollama":
             self.api_key = None
         else:
-            if api_key is None:
-                api_key = self._get_api_key_from_env()
-            self.api_key = api_key
+            self.api_key = api_key or self._get_api_key_from_env()
             if not self.api_key:
-                raise ValueError(f"No API key provided for {self.provider} and none found in environment variables")
-    
-        
-        # Initialize Chat with the provider, API key, and default model
+                raise ValueError(
+                    f"No API key provided for {self.provider} and none found in environment variables"
+                )
+
         self.chat = Chat(self.provider, self.api_key, self.default_model)
 
-    def _get_api_key_from_env(self):
-        """
-        Attempt to get the API key from environment variables.
-        First checks for a provider-specific environment variable,
-        then falls back to a generic API_KEY environment variable.
-        """
+    # --------------------------------------------------------------------- #
+    #  Internals                                                            #
+    # --------------------------------------------------------------------- #
+
+    def _get_api_key_from_env(self) -> str | None:
         if self.provider == "ollama":
-            return None  # Ollama does not require an API ke
-        # Try provider-specific environment variable
-        env_var_name = API_KEY_ENV_VARS.get(self.provider)
-        if env_var_name:
-            api_key = os.getenv(env_var_name)
-            if api_key:
-                return api_key
-        
-        # Try generic API_KEY environment variable
-        generic_key = os.getenv('API_KEY')
-        if generic_key:
-            return generic_key
-            
-        return None
+            return None
+        env_var = API_KEY_ENV_VARS.get(self.provider)
+        return os.getenv(env_var) or os.getenv("API_KEY")
 
 
 class Chat:
     def __init__(self, provider, api_key, default_model=None):
-        self.provider = provider
-        self.api_key = api_key
-        self.default_model = default_model
-        self.completions = Completions(self.provider, self.api_key, self.default_model)
+        self.completions = Completions(provider, api_key, default_model)
 
 
 class Completions:
-    def __init__(self, provider, api_key, default_model=None):
+    def __init__(self, provider, api_key, default_model):
         self.provider = provider
         self.api_key = api_key
         self.default_model = default_model
-        
+
+    # --------------------------------------------------------------------- #
+    #  Unified create()                                                     #
+    # --------------------------------------------------------------------- #
+
     @log_processing_time
     def create(self, messages, temperature=0.7, model=None, **kwargs):
-        """
-        Create a chat completion using the specified or default model.
-        
-        :param messages: A list of messages, e.g., [{"role": "user", "content": "Hello"}]
-        :param temperature: Creativity parameter.
-        :param model: Optional model override; if not provided, the default model is used.
-        :param kwargs: Additional parameters like top_k, top_p, repeat_penalty, etc.
-        :return: The JSON response from the provider's API.
-        """
-        # Use the provided model if given; otherwise, fall back to the default
-        model_to_use = model if model is not None else self.default_model
-        if model_to_use is None:
-            raise ValueError("No model specified. Please provide a model in Client or override here.")
+        model_to_use = model or self.default_model
+        if not model_to_use:
+            raise ValueError("No model specified")
 
-        # Lookup the API endpoint based on the provider
-        url = PROVIDER_ENDPOINTS.get(self.provider)
-        if not url:
-            raise ValueError(f"Unknown provider: {self.provider}")
-
-        # Build the payload and headers
-        # Handle Ollama's API payload structure
+        # ---------- Provider-specific request build ---------------------- #
         if self.provider == "ollama":
-            # Check if any message contains images
-            has_images = False
-            for msg in messages:
-                if isinstance(msg.get("content"), list):
-                    for content_item in msg["content"]:
-                        if isinstance(content_item, dict) and content_item.get("type") == "image":
-                            has_images = True
-                            break
-                    if has_images:
-                        break
-            
-            if has_images:
-                # VLM case: Process messages with images for Ollama
-                processed_messages = self._process_ollama_vlm_messages(messages)
-                
-                payload = {
-                    "model": model_to_use,
-                    "messages": processed_messages,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        **kwargs
-                    }
-                }
-            else:
-                # Standard text case
-                prompt = "\n".join([msg["content"] for msg in messages if msg["role"] == "user"])
-                
-                payload = {
-                    "model": model_to_use,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        **kwargs
-                    }
-                }
-            
-            headers = {"Content-Type": "application/json"}
-        else:
-            payload = {
-                "model": model_to_use,
-                "messages": messages,
-                "temperature": temperature,
-            }
+            url, headers, payload = self._build_ollama(messages, model_to_use,
+                                                       temperature, **kwargs)
+
+        elif self.provider == "gemini":
+            url, headers, payload = self._build_gemini(messages, model_to_use,
+                                                       temperature, **kwargs)
+
+        else:  # OpenAI-style providers (OpenAI, DeepSeek, Sonnet, Groq)
+            url = PROVIDER_ENDPOINTS[self.provider]
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}"
             }
-        
-        # Make the POST request
-        response = requests.post(url, headers=headers, json=payload)
+            payload = {
+                "model": model_to_use,
+                "messages": messages,
+                "temperature": temperature,
+                **kwargs
+            }
 
-        try:
-            response.raise_for_status()
-            response_data = response.json()
+        # ---------- Dispatch -------------------------------------------- #
+        resp = requests.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
 
-            # If it's Ollama and we have a top-level "response" string, convert it
-            if self.provider == "ollama" and "response" in response_data:
-                # Wrap the "response" text in an OpenAI-style "choices" array
-                ollama_text = response_data["response"]
-                
-                # Optionally handle finish reason, if present
-                finish_reason = response_data["done_reason"] if "done_reason" in response_data else None
-                
-                response_data["choices"] = [{
-                    "index": 0,
-                    "finish_reason": finish_reason,
-                    "message": {
-                        # Emulate an assistant role
-                        "role": "assistant",
-                        # Put the actual LLM text here
-                        "content": ollama_text
-                    }
-                }]
-                
-                # (Optional) remove the original "response" to avoid confusion
-                del response_data["response"]
+        # ---------- Provider-specific response adaptation ---------------- #
+        if self.provider == "ollama":
+            data = self._adapt_ollama_response(data)
+        elif self.provider == "gemini":
+            data = self._adapt_gemini_response(data)
 
-            return Response(response_data)
-        except requests.exceptions.HTTPError as e:
-            print(f"ERROR: HTTP error occurred: {e}")
-            if response.text:
-                print(f"Response text: {response.text}")
-            raise
-        except requests.exceptions.JSONDecodeError as e:
-            print(f"ERROR: Failed to decode JSON response: {e}")
-            print(f"Response text: {response.text}")
-            raise
+        return Response(data)
 
-    def _process_ollama_vlm_messages(self, messages):
+    # --------------------------------------------------------------------- #
+    #  Provider helpers                                                     #
+    # --------------------------------------------------------------------- #
+
+    # -------------- Ollama (text + VLM) ----------------------------------- #
+    def _build_ollama(self, messages, model_to_use, temperature, **kwargs):
+        # Check VLM?
+        has_images = any(
+            isinstance(m.get("content"), list)
+            for m in messages
+        )
+
+        if has_images:
+            proc_msgs = self._process_ollama_vlm_messages(messages)
+            payload = {
+                "model": model_to_use,
+                "messages": proc_msgs,
+                "stream": False,
+                "options": {"temperature": temperature, **kwargs},
+            }
+        else:
+            prompt = "\n".join(m["content"]
+                               for m in messages if m["role"] == "user")
+            payload = {
+                "model": model_to_use,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": temperature, **kwargs},
+            }
+
+        headers = {"Content-Type": "application/json"}
+        url = PROVIDER_ENDPOINTS["ollama"]
+        return url, headers, payload
+
+    def _adapt_ollama_response(self, data: dict) -> dict:
+        if "response" in data:
+            text = data.pop("response")
+            data["choices"] = [{
+                "index": 0,
+                "finish_reason": data.get("done_reason"),
+                "message": {"role": "assistant", "content": text}
+            }]
+        return data
+
+    # -------------- Gemini ------------------------------------------------ #
+    def _build_gemini(self, messages, model_to_use, temperature, **kwargs):
         """
-        Process message format for Ollama VLM models.
-        
-        :param messages: Original messages with possible image content
-        :return: Processed messages in Ollama VLM format
+        Convert an OpenAI-style chat history (system / user / assistant)
+        into Gemini’s required format (role = "user" | "model").
+
+        Mapping rules
+        -------------
+        • "user"      →  "user"
+        • "assistant" →  "model"
+        • "system"    →  prepend to the *first* user message
+                         (Gemini has no dedicated system role)
         """
-        processed_messages = []
-        
+        # Endpoint
+        url = f"{PROVIDER_ENDPOINTS['gemini']}{model_to_use}:generateContent"
+
+        contents = []
+        system_buffer = ""
+
         for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            
-            # If content is a string, keep it as is
-            if isinstance(content, str):
-                processed_messages.append({
-                    "role": role,
-                    "content": content
-                })
+            role = msg.get("role", "user")
+            text = msg.get("content", "")
+
+            # 1️⃣  System messages → keep in a buffer, prepend to next user msg
+            if role == "system":
+                system_buffer += text + "\n"
                 continue
-            
-            # Handle multimodal content (list with text and images)
-            if isinstance(content, list):
-                processed_content = ""
-                for item in content:
-                    if item.get("type") == "text":
-                        processed_content += item["text"]
-                    elif item.get("type") == "image":
-                        # Handle image: convert to base64 for Ollama
-                        img_data = item.get("image_url", {}).get("url", "") 
-                        
-                        # If the image is a data URL
-                        if img_data.startswith("data:image"):
-                            # Extract the base64 part
-                            img_base64 = img_data.split(",")[1]
-                        elif img_data.startswith("http"):
-                            # Download the image and convert to base64
-                            img_response = requests.get(img_data)
-                            img_response.raise_for_status()
-                            img_base64 = base64.b64encode(img_response.content).decode("utf-8")
-                        elif os.path.exists(img_data):
-                            # Read from local file
-                            with open(img_data, "rb") as img_file:
-                                img_base64 = base64.b64encode(img_file.read()).decode("utf-8")
-                        else:
-                            # Assume it's already base64
-                            img_base64 = img_data
-                        
-                        # Ollama expects images in the format "![](data:image/jpeg;base64,<base64_data>)"
-                        processed_content += f"\n![](data:image/jpeg;base64,{img_base64})\n"
-                
-                processed_messages.append({
-                    "role": role,
-                    "content": processed_content
-                })
-        
-        return processed_messages
+
+            # 2️⃣  Map roles for Gemini
+            if role == "assistant":
+                gemini_role = "model"
+            else:  # "user" or anything else
+                gemini_role = "user"
+
+            # 3️⃣  If there is buffered system text and we’re at the first user msg,
+            #     prepend it once, then clear the buffer.
+            if system_buffer and gemini_role == "user":
+                text = system_buffer.strip() + "\n" + text
+                system_buffer = ""
+
+            # 4️⃣  Assemble Gemini part
+            contents.append(
+                {
+                    "role": gemini_role,
+                    "parts": [{"text": text}],
+                }
+            )
+
+        # If all messages were “system” (rare), turn them into one user turn
+        if not contents and system_buffer:
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": system_buffer.strip()}],
+                }
+            )
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": temperature,
+                **kwargs,
+            },
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-goog-api-key": self.api_key,
+        }
+        return url, headers, payload
+
+    def _adapt_gemini_response(self, data: dict) -> dict:
+        """
+        Convert Gemini's {"candidates":[{"content":{"parts":[{"text":...}]}}]}
+        to OpenAI-style {"choices":[{"message":{"content":...}}]}
+        """
+        if "candidates" not in data:
+            return data
+
+        choices = []
+        for idx, cand in enumerate(data["candidates"]):
+            # Get first part text (if empty, fallback to whole string)
+            try:
+                text = cand["content"]["parts"][0]["text"]
+            except Exception:
+                text = cand.get("output", "")
+
+            choices.append({
+                "index": idx,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": text},
+            })
+
+        data["choices"] = choices
+        return data
+
+    # -------------- Shared VLM helper ------------------------------------- #
+    def _process_ollama_vlm_messages(self, messages):
+        processed = []
+        for msg in messages:
+            role, content = msg["role"], msg["content"]
+
+            if isinstance(content, str):
+                processed.append({"role": role, "content": content})
+                continue
+
+            # content is list of {type,text|image}
+            buf = ""
+            for part in content:
+                if part.get("type") == "text":
+                    buf += part["text"]
+                elif part.get("type") == "image":
+                    img_data = part.get("image_url", {}).get("url", "")
+                    buf += f"\n![](data:image/jpeg;base64,{self._to_base64(img_data)})\n"
+            processed.append({"role": role, "content": buf})
+        return processed
+
+    @staticmethod
+    def _to_base64(ref: str):
+        if ref.startswith("data:image"):
+            return ref.split(",", 1)[1]
+        if ref.startswith("http"):
+            resp = requests.get(ref)
+            resp.raise_for_status()
+            return base64.b64encode(resp.content).decode()
+        if os.path.exists(ref):
+            with open(ref, "rb") as f:
+                return base64.b64encode(f.read()).decode()
+        # assume already b64
+        return ref
+
+
+# --------------------------------------------------------------------------- #
+#  Response abstraction                                                       #
+# --------------------------------------------------------------------------- #
 
 
 class Response:
-    """Wrapper class for API responses to provide consistent attribute access"""
-    def __init__(self, response_data):
-        self.raw_response = response_data
-        self.choices = []
-        
-        # Process choices and create Choice objects
-        if 'choices' in response_data:
-            self.choices = [Choice(choice) for choice in response_data['choices']]
-        
-        # Add other common response fields
-        self.id = response_data.get('id')
-        self.created = response_data.get('created')
-        self.model = response_data.get('model')
-        self.usage = response_data.get('usage', {})
+    def __init__(self, data):
+        self.raw_response = data
+        self.choices = [Choice(c) for c in data.get("choices", [])]
+        self.id = data.get("id")
+        self.created = data.get("created")
+        self.model = data.get("model")
+        self.usage = data.get("usage", {})
 
     def __str__(self):
-        if self.choices and len(self.choices) > 0:
+        if self.choices:
             return self.choices[0].message.content
         return str(self.raw_response)
 
 
 class Choice:
-    """Wrapper class for individual choices in the response"""
-    def __init__(self, choice_data):
-        self.index = choice_data.get('index')
-        self.finish_reason = choice_data.get('finish_reason')
-        
-        # Create Message object if message data exists
-        message_data = choice_data.get('message', {})
-        self.message = Message(message_data)
+    def __init__(self, data):
+        self.index = data.get("index")
+        self.finish_reason = data.get("finish_reason")
+        self.message = Message(data.get("message", {}))
 
 
 class Message:
-    """Wrapper class for message content"""
-    def __init__(self, message_data):
-        self.role = message_data.get('role')
-        self.content = message_data.get('content')
-        # Add any additional message attributes that might be provider-specific
-        for key, value in message_data.items():
-            if not hasattr(self, key):
-                setattr(self, key, value)
+    def __init__(self, data):
+        self.role = data.get("role")
+        self.content = data.get("content")
+        # copy any provider-specific keys
+        for k, v in data.items():
+            if not hasattr(self, k):
+                setattr(self, k, v)
