@@ -8,7 +8,9 @@ import logging
 import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-import pickle, json, gzip
+import pickle
+import json
+import gzip
 from tqdm import tqdm
 
 
@@ -60,13 +62,15 @@ class RetrievalEngine:
         # Search back‑ends --------------------------------------------------------------
         self.bm25_wrapper = BM25_search()
         self.faiss_wrapper = FAISS_search(self.embedding_model)
-        self.hybrid_search = Hybrid_search(self.bm25_wrapper, self.faiss_wrapper)
+        self.hybrid_search = Hybrid_search(
+            self.bm25_wrapper, self.faiss_wrapper)
         self.search_mgr = SearchManager(self.hybrid_search, self.doc_manager)
 
         # Persistence (optional) --------------------------------------------------------
         self.vector_store = vector_store
         self.persistence = persistence or (
-            AsyncPersistence(vector_store) if vector_store is not None else None
+            AsyncPersistence(
+                vector_store) if vector_store is not None else None
         )
 
         # Batch processor ---------------------------------------------------------------
@@ -142,7 +146,7 @@ class RetrievalEngine:
 
         # Search indices
         self.faiss_wrapper.save(dir_)
-        self.bm25_wrapper.save(dir_)   
+        self.bm25_wrapper.save(dir_)
 
         # tiny meta (good place for model version)
         (dir_ / "meta.json").write_text(
@@ -154,8 +158,6 @@ class RetrievalEngine:
         )
         logger.info("Indices saved -> %s", dir_)
 
-
-    
     def load_indices(self, dir_: str | Path) -> None:
         dir_ = Path(dir_)
 
@@ -167,7 +169,7 @@ class RetrievalEngine:
         docs_file = dir_ / "docs.pkl.gz"
         if docs_file.exists():
             raw = pickle.loads(gzip.decompress(docs_file.read_bytes()))
-              # populate FAISS.doc_dict only if you need it
+            # populate FAISS.doc_dict only if you need it
             self.faiss_wrapper.doc_dict.update(
                 {doc_id: text for doc_id, (text, _meta) in raw.items()}
             )
@@ -178,9 +180,10 @@ class RetrievalEngine:
                 else:                       # old file
                     text, meta = payload
                     owner = meta.get("owner_id")     # may be None
-                self.doc_manager.add_document(doc_id, text, meta, user_id=owner)
+                self.doc_manager.add_document(
+                    doc_id, text, meta, user_id=owner)
                 self.token_counter.add_document(doc_id, text, user_id=owner)
-        
+
         logger.info(
             "Indices loaded <- %s  (docs=%d, owners=%s)",
             dir_,
@@ -188,9 +191,8 @@ class RetrievalEngine:
             {u: len(s) for u, s in self.doc_manager.user_to_doc_ids.items()},
         )
 
-
-
     # Public
+
     def save_state(self, path: str | Path, *, fmt: str = "json") -> bool:
         """Persist engine state. *fmt* can be 'json' or 'pickle'."""
         path = Path(path).expanduser().resolve()
@@ -208,7 +210,7 @@ class RetrievalEngine:
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to save state - %s", exc)
             return False
-    
+
     def load_state(self, path: str | Path, *, fmt: str | None = None, verbose: bool = False) -> bool:
         """Restore engine from a previously saved JSON / pickle snapshot."""
         path = Path(path).expanduser().resolve()
@@ -216,7 +218,8 @@ class RetrievalEngine:
             fmt = "json" if path.suffix.lower() == ".json" else "pickle"
         try:
             if fmt == "json":
-                data = StateManager(path.parent).load(path.stem, fmt="json", default=None)
+                data = StateManager(path.parent).load(
+                    path.stem, fmt="json", default=None)
             else:
                 with path.open("rb") as fp:
                     data = pickle.load(fp)
@@ -232,7 +235,7 @@ class RetrievalEngine:
             return False
 
     # --------------------------- internal restore -----------------------------
-   
+
     def _restore_from_state(self, data: Dict) -> None:
 
         # Re-add documents & tokens
@@ -268,7 +271,7 @@ class RetrievalEngine:
                     # if you really need the blocking result, add “await” or “.result()”
             except RuntimeError:
                 # ── No running loop: do it synchronously or via asyncio.run() ─────────
-                asyncio.run(run_in_threadpool(_reindex))  
+                asyncio.run(run_in_threadpool(_reindex))
         logger.info("Restored %d docs into indices", len(batch))
 
     # ----------------------------------------------------------------- private helpers
@@ -278,7 +281,7 @@ class RetrievalEngine:
             if proc.can_process(file_path):
                 return proc
         raise ValueError(f"No processor available for {file_path}")
-    
+
     def _allowed_ids(self, user_id: str | None) -> list[str] | None:
         """Return the list of doc_ids this user may see (or None == no filter)."""
         if user_id is None:
@@ -306,7 +309,8 @@ class RetrievalEngine:
         BATCH_SIZE = 100
 
         iterator: Iterable = (
-            tqdm(sources, desc="Processing files", unit="file") if show_progress else sources
+            tqdm(sources, desc="Processing files",
+                 unit="file") if show_progress else sources
         )
 
         for item in iterator:
@@ -317,9 +321,10 @@ class RetrievalEngine:
                 from vidavox.schemas.common import DocItem  # type: ignore
 
                 assert isinstance(item, DocItem)
-                path_str, doc_id, file_url, folder_id  = item.path, item.doc_id, item.url, item.folder_id
+                path_str, doc_id, file_url, folder_id = item.path, item.doc_id, item.url, item.folder_id
 
-                logger.info(f"Processing item as DocItem: path_str='{path_str}', doc_id='{doc_id}', file_url='{file_url}, folder_id='{folder_id}'")
+                logger.info(
+                    f"Processing item as DocItem: path_str='{path_str}', doc_id='{doc_id}', file_url='{file_url}, folder_id='{folder_id}'")
             # ----------------------------------------------------------------- choose processor
             processor = self._select_processor(path_str)
             try:
@@ -334,7 +339,7 @@ class RetrievalEngine:
                     "text_col": text_col,
                     "metadata_cols": metadata_cols,
                 }
-                docs_from_file = processor.process(path_str, **kwargs)  
+                docs_from_file = processor.process(path_str, **kwargs)
             except Exception as e:
                 logger.exception("Failed to process %s: %s", path_str, e)
                 failures.append(ProcessFailure(path_str, str(e)))
@@ -351,8 +356,8 @@ class RetrievalEngine:
         # flush remainder ------------------------------------------------------------
         if batch_docs:
             await self.batch_processor.process_batch(batch_docs, user_id=user_id)
-        
-        self.last_failures = failures 
+
+        self.last_failures = failures
 
         return self
 
@@ -375,8 +380,8 @@ class RetrievalEngine:
         logger.info("Found %d files under %s", len(files), directory)
         return self.from_paths(files, show_progress=show_progress, **kwargs)
 
-
     # --------------------------------------------------------------------- querying API
+
     def query(
         self,
         query_text: str,
@@ -391,7 +396,8 @@ class RetrievalEngine:
         """Public convenience - delegates to SearchManager then formats."""
         if self.use_async:
             return asyncio.run(
-                self._query_async(query_text, keywords, threshold, top_k, formatter, user_id, **search_kwargs)
+                self._query_async(query_text, keywords, threshold,
+                                  top_k, formatter, user_id, **search_kwargs)
             )
         return self._query_sync(query_text, keywords, threshold, top_k, formatter, user_id, **search_kwargs)
 
@@ -435,7 +441,7 @@ class RetrievalEngine:
             **search_kwargs,
         )
         return self.search_mgr.process_search_results(results, formatter)
-    
+
     # -----------------------------------------------------------------
     #  Single-document deletion helpers
     # -----------------------------------------------------------------
@@ -455,7 +461,8 @@ class RetrievalEngine:
         # ---------------------------------------------------------------- ownership / existence
         allowed = set(self._allowed_ids(user_id) or [])
         if doc_id not in allowed or doc_id not in self.doc_manager.documents:
-            logger.warning("delete_document: %s not found / not owned by %s", doc_id, user_id)
+            logger.warning(
+                "delete_document: %s not found / not owned by %s", doc_id, user_id)
             return False
 
         try:
@@ -472,7 +479,6 @@ class RetrievalEngine:
         except Exception as exc:                   # noqa: BLE001
             logger.error("delete_document: %s - %s", doc_id, exc)
             return False
-
 
     async def delete_document_async(
         self,
@@ -503,10 +509,10 @@ class RetrievalEngine:
             logger.error("delete_document_async: %s - %s", doc_id, exc)
             return False
 
-    
     # -----------------------------------------------------------------
     #  Bulk deletion
     # -----------------------------------------------------------------
+
     def delete_documents(
         self,
         doc_ids: List[str],
@@ -517,8 +523,9 @@ class RetrievalEngine:
         Returns the list of IDs that were actually deleted.
         """
         # Filter by ownership (multi-tenant safety) and existence
-        allowed   = set(self._allowed_ids(user_id) or doc_ids)
-        to_delete = [d for d in doc_ids if d in allowed and d in self.doc_manager.documents]
+        allowed = set(self._allowed_ids(user_id) or doc_ids)
+        to_delete = [
+            d for d in doc_ids if d in allowed and d in self.doc_manager.documents]
         if not to_delete:
             return []
 
@@ -543,14 +550,28 @@ class RetrievalEngine:
 
         return removed
 
+    def delete_user_documents(self, user_id: str) -> int:
+        """
+        Delete all documents owned by a given user_id from in-memory state and indices.
+        Returns the number of documents deleted.
+        """
+        doc_ids = self.doc_manager.get_user_docs(user_id)
+        if not doc_ids:
+            return 0
+
+        deleted_ids = self.delete_documents(doc_ids, user_id=user_id)
+        logger.info("Deleted %d documents for user_id=%s",
+                    len(deleted_ids), user_id)
+        return len(deleted_ids)
 
     # Expose low‑level APIs for advanced use‑cases -------------------------------------
+
     def search(self, *args, **kwds):
         return self.search_mgr.search(*args, **kwds)
 
     async def search_async(self, *args, **kwds):
         return await self.search_mgr.search_async(*args, **kwds)
-    
+
     # -----------------------------------------------------------------
     # Legacy convenience wrappers – feel free to delete once migrated
     # -----------------------------------------------------------------
@@ -578,7 +599,7 @@ class RetrievalEngine:
             **search_kwargs,
         )
         return self.search_mgr.process_search_results(raw, search_kwargs.get("result_formatter"))
-    
+
      # ---------------------------- NEW public batch helpers -------------------
     def query_batch(
         self,
@@ -651,7 +672,8 @@ class RetrievalEngine:
             exclude_doc_ids,
             user_id,
         )
-        per_query = [self.search_mgr.process_search_results(b, formatter) for b in raw_batches]
+        per_query = [self.search_mgr.process_search_results(
+            b, formatter) for b in raw_batches]
         if group_by_query:
             return per_query
         return self._merge_batches(per_query)
@@ -684,7 +706,8 @@ class RetrievalEngine:
             exclude_doc_ids,
             user_id,
         )
-        per_query = [self.search_mgr.process_search_results(b, formatter) for b in raw_batches]
+        per_query = [self.search_mgr.process_search_results(
+            b, formatter) for b in raw_batches]
         if group_by_query:
             return per_query
         return self._merge_batches(per_query)
@@ -737,4 +760,3 @@ class RetrievalEngine:
     # ------------------------- util ------------------------------------------
     def _merge_batches(self, batches: List[List[Dict]]):
         return self.search_mgr.merge_batches(batches)
-
