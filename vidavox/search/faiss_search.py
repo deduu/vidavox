@@ -7,7 +7,8 @@ import logging
 import faiss
 import numpy as np
 import torch
-import pickle, gzip
+import pickle
+import gzip
 import json
 
 from vidavox.utils.script_tracker import log_processing_time
@@ -267,10 +268,13 @@ class FAISS_search:
         Initialize FAISS_search with an embedding model.
         """
         self.doc_dict: Dict[str, str] = {}  # Maps doc_id to document text
-        self.id_map: Dict[str, int] = {}  # Maps doc_id to an integer ID for FAISS
-        self.reverse_id_map: Dict[int, str] = {}  # Maps integer ID back to doc_id
+        # Maps doc_id to an integer ID for FAISS
+        self.id_map: Dict[str, int] = {}
+        # Maps integer ID back to doc_id
+        self.reverse_id_map: Dict[int, str] = {}
         self.next_index_id: int = 0  # Next available integer ID
-        self.embedding_model = self._initialize_embedding_model(embedding_model)
+        self.embedding_model = self._initialize_embedding_model(
+            embedding_model)
         self.dimension = self.get_embedding_dimension()
         self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
 
@@ -331,9 +335,11 @@ class FAISS_search:
                 logger.info(
                     f"Using default model '{self.DEFAULT_MODEL_NAME}' on device={device}"
                 )
-                model = SentenceTransformer(self.DEFAULT_MODEL_NAME, device=device)
+                model = SentenceTransformer(
+                    self.DEFAULT_MODEL_NAME, device=device)
             elif isinstance(embedding_model, str):
-                logger.info(f"Loading model '{embedding_model}' on device={device}")
+                logger.info(
+                    f"Loading model '{embedding_model}' on device={device}")
                 model = SentenceTransformer(embedding_model, device=device)
             elif isinstance(embedding_model, SentenceTransformer):
                 # If the user has already loaded a SentenceTransformer, move it to GPU/CPU as needed
@@ -426,7 +432,8 @@ class FAISS_search:
         with self.lock:
             for doc_id, doc in docs_with_ids:
                 if not isinstance(doc, str) or not isinstance(doc_id, str):
-                    logger.warning(f"Skipping invalid document or ID: {doc_id}")
+                    logger.warning(
+                        f"Skipping invalid document or ID: {doc_id}")
                     continue
                 # If the document already exists, you might decide to update or skip.
                 if doc_id in self.doc_dict:
@@ -439,7 +446,8 @@ class FAISS_search:
                 # Assign a new integer ID for FAISS
                 current_index = self.next_index_id
                 self.id_map[doc_id] = current_index
-                self.reverse_id_map[current_index] = doc_id  # For reverse lookup
+                # For reverse lookup
+                self.reverse_id_map[current_index] = doc_id
                 new_ids.append(current_index)
                 new_texts.append(doc)
                 self.next_index_id += 1
@@ -483,7 +491,8 @@ class FAISS_search:
         with self.lock:
             for doc_id, doc in docs_with_ids:
                 if not isinstance(doc, str) or not isinstance(doc_id, str):
-                    logger.warning(f"Skipping invalid document or ID: {doc_id}")
+                    logger.warning(
+                        f"Skipping invalid document or ID: {doc_id}")
                     continue
                 # If the document already exists, you might decide to update or skip.
                 if doc_id in self.doc_dict:
@@ -496,7 +505,8 @@ class FAISS_search:
                 # Assign a new integer ID for FAISS
                 current_index = self.next_index_id
                 self.id_map[doc_id] = current_index
-                self.reverse_id_map[current_index] = doc_id  # For reverse lookup
+                # For reverse lookup
+                self.reverse_id_map[current_index] = doc_id
                 new_ids.append(current_index)
                 new_texts.append(doc)
                 self.next_index_id += 1
@@ -527,7 +537,8 @@ class FAISS_search:
                             )
                         ]
             except Exception as e:
-                raise RuntimeError(f"Failed to add documents asynchronously: {str(e)}")
+                raise RuntimeError(
+                    f"Failed to add documents asynchronously: {str(e)}")
 
         return None
 
@@ -552,7 +563,8 @@ class FAISS_search:
         self.index.remove_ids(
             faiss.IDSelectorBatch(np.array([faiss_id], dtype="int64"))
         )
-        logger.info("Removed document '%s' (faiss id %d) in-place.", doc_id, faiss_id)
+        logger.info("Removed document '%s' (faiss id %d) in-place.",
+                    doc_id, faiss_id)
         return True
 
     async def async_remove_document(self, doc_id: str) -> bool:
@@ -592,7 +604,8 @@ class FAISS_search:
             for did in doc_ids:
                 fid = self.id_map.pop(did, None)
                 if fid is None:
-                    logger.warning("Document ID '%s' not found; skipping.", did)
+                    logger.warning(
+                        "Document ID '%s' not found; skipping.", did)
                     continue
                 removed.append(did)
                 faiss_ids.append(fid)
@@ -622,7 +635,8 @@ class FAISS_search:
             for did in doc_ids:
                 fid = self.id_map.pop(did, None)
                 if fid is None:
-                    logger.warning("Document ID '%s' not found; skipping.", did)
+                    logger.warning(
+                        "Document ID '%s' not found; skipping.", did)
                     continue
                 removed.append(did)
                 faiss_ids.append(fid)
@@ -636,7 +650,8 @@ class FAISS_search:
                 self.index.remove_ids, faiss.IDSelectorBatch(ids_to_remove)
             )
             logger.info(
-                "Batch asynchronously removed %d docs (in-place).", len(removed)
+                "Batch asynchronously removed %d docs (in-place).", len(
+                    removed)
             )
         else:
             logger.info("No documents were removed asynchronously.")
@@ -647,7 +662,8 @@ class FAISS_search:
         # snapshot what you need under the lock
         with self.lock:
             if not self.doc_dict:
-                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension))
                 logger.info("FAISS index emptied (0 documents left).")
                 return
             all_doc_ids = list(self.doc_dict.keys())
@@ -674,7 +690,8 @@ class FAISS_search:
             if embeddings.size:
                 self.index.add_with_ids(embeddings, new_ids)
 
-        logger.info("FAISS index rebuilt (documents left: %d)", len(all_doc_ids))
+        logger.info("FAISS index rebuilt (documents left: %d)",
+                    len(all_doc_ids))
 
     # -- helper -------------------------------------------------------------
 
@@ -697,7 +714,8 @@ class FAISS_search:
         # ---------- 1. Snapshot state (fast) ----------
         with self.lock:
             if not self.doc_dict:
-                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension))
                 self.id_map.clear()
                 self.reverse_id_map.clear()
                 self.next_index_id = 0
@@ -741,7 +759,8 @@ class FAISS_search:
             self.next_index_id = len(all_doc_ids)
 
         logger.info(
-            "FAISS index rebuilt asynchronously (documents left: %d)", len(all_doc_ids)
+            "FAISS index rebuilt asynchronously (documents left: %d)", len(
+                all_doc_ids)
         )
 
     def search(
@@ -760,7 +779,8 @@ class FAISS_search:
         """
         with self.lock:
             if self.index.ntotal == 0:
-                logger.info("FAISS index is empty. No results can be returned.")
+                logger.info(
+                    "FAISS index is empty. No results can be returned.")
                 return np.array([]), []
 
         try:
@@ -819,7 +839,8 @@ class FAISS_search:
         """
         with self.lock:
             if self.index.ntotal == 0:
-                logger.info("FAISS index is empty. No results can be returned.")
+                logger.info(
+                    "FAISS index is empty. No results can be returned.")
                 return np.array([]), []
 
         try:
@@ -867,7 +888,8 @@ class FAISS_search:
             return distances[: len(doc_ids)], doc_ids
 
         except Exception as e:
-            raise RuntimeError(f"Failed to encode query asynchronously: {str(e)}")
+            raise RuntimeError(
+                f"Failed to encode query asynchronously: {str(e)}")
 
     def search_batch(
         self,
@@ -951,13 +973,16 @@ class FAISS_search:
             if new_vectors:
                 new_vectors_np = np.array(new_vectors, dtype="float32")
                 # Reinitialize the FAISS index.
-                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension))
                 self.index.add_with_ids(
                     new_vectors_np, np.array(new_ids, dtype="int64")
                 )
-                logger.info(f"Rebuilt FAISS index from {len(new_ids)} stored vectors.")
+                logger.info(
+                    f"Rebuilt FAISS index from {len(new_ids)} stored vectors.")
             else:
-                logger.warning("No vectors provided to restore the FAISS index.")
+                logger.warning(
+                    "No vectors provided to restore the FAISS index.")
 
     async def async_restore_index_from_vectors(
         self, vectors_map: Dict[str, np.ndarray]
@@ -966,7 +991,7 @@ class FAISS_search:
         Asynchronously rebuild the FAISS index from precomputed vectors
         without blocking the event loop for potentially CPU-bound operations.
         """
-        async with self.lock:
+        with self.lock:
             # Reset id_map and next_index_id.
             self.id_map = {}
             self.reverse_id_map = {}
@@ -987,15 +1012,17 @@ class FAISS_search:
                 np.array, new_vectors, dtype="float32"
             )
             # Reinitialize the FAISS index in a thread, as adding vectors might be CPU intensive.
-            async with self.lock:
-                self.index = faiss.IndexIDMap(faiss.IndexFlatL2(self.dimension))
+            with self.lock:
+                self.index = faiss.IndexIDMap(
+                    faiss.IndexFlatL2(self.dimension))
                 # Offload the index addition to a thread.
                 await asyncio.to_thread(
                     self.index.add_with_ids,
                     new_vectors_np,
                     np.array(new_ids, dtype="int64"),
                 )
-                logger.info(f"Rebuilt FAISS index from {len(new_ids)} stored vectors.")
+                logger.info(
+                    f"Rebuilt FAISS index from {len(new_ids)} stored vectors.")
         else:
             logger.warning("No vectors provided to restore the FAISS index.")
 
@@ -1112,7 +1139,8 @@ class FAISS_search:
             # Create dictionary mapping document IDs to vectors
             return {d_id: matrix[i] for i, d_id in enumerate(valid_ids)}
         except Exception as e:
-            logger.error(f"Failed to batch encode documents asynchronously: {e}")
+            logger.error(
+                f"Failed to batch encode documents asynchronously: {e}")
             return {}
 
     # Additional filtering methods
@@ -1184,7 +1212,8 @@ class FAISS_search:
         """
         with self.lock:
             if self.index.ntotal == 0:
-                logger.info("FAISS index is empty. No results can be returned.")
+                logger.info(
+                    "FAISS index is empty. No results can be returned.")
                 return [(np.array([]), [])] * len(queries)
 
         try:
@@ -1197,7 +1226,7 @@ class FAISS_search:
             # Search each query
             results = []
             for i in range(len(queries)):
-                single_query = query_embeddings[i : i + 1]  # Keep as 2D array
+                single_query = query_embeddings[i: i + 1]  # Keep as 2D array
 
                 # Apply ID filter if provided during search
                 if id_filter is not None:
@@ -1251,7 +1280,8 @@ class FAISS_search:
             embedding_model
         )
         searcher.dimension = await searcher.async_get_embedding_dimension()
-        searcher.index = faiss.IndexIDMap(faiss.IndexFlatL2(searcher.dimension))
+        searcher.index = faiss.IndexIDMap(
+            faiss.IndexFlatL2(searcher.dimension))
         return searcher
 
     async def compact_rebuild(self) -> None:

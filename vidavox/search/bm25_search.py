@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 import threading
 import logging
-import pickle, gzip
+import pickle
+import gzip
 import re
 from typing import Any, Dict
 from vidavox.utils.ntlk_setup import ensure_nltk_resources
@@ -64,7 +65,8 @@ class BM25_search:
         Build a pure-python dict that fully reconstructs the BM25 index,
         without duplicating the raw texts that live in docs.pkl.gz.
         """
-        tokenised_corpus = [self.doc_dict[d]["tokenized"] for d in self.doc_ids]
+        tokenised_corpus = [self.doc_dict[d]["tokenized"]
+                            for d in self.doc_ids]
 
         return {
             "doc_ids": self.doc_ids,  # keep order
@@ -112,7 +114,8 @@ class BM25_search:
         path = Path(path)
         file_path = (path / self.BM25_FILENAME) if path.is_dir() else path
         if not file_path.exists():
-            logger.warning("BM25 load(): %s does not exist — nothing loaded", file_path)
+            logger.warning(
+                "BM25 load(): %s does not exist — nothing loaded", file_path)
             return
 
         with gzip.open(file_path, "rb") as fp:
@@ -144,7 +147,8 @@ class BM25_search:
         # --- rebuild Rank-BM25 instantly ---------------------------
         self.bm25 = BM25Okapi(corpus)
 
-        logger.info("BM25 loaded <- %s (%d docs)", file_path, len(self.doc_ids))
+        logger.info("BM25 loaded <- %s (%d docs)",
+                    file_path, len(self.doc_ids))
 
     def preprocess(self, text: str) -> List[str]:
         """
@@ -260,7 +264,8 @@ class BM25_search:
             for result in results:
                 if result:
                     doc_id, doc, tokenized = result
-                    self.doc_dict[doc_id] = {"text": doc, "tokenized": tokenized}
+                    self.doc_dict[doc_id] = {
+                        "text": doc, "tokenized": tokenized}
             self.doc_ids = list(self.doc_dict.keys())
             await asyncio.to_thread(self.update_bm25)
 
@@ -340,14 +345,17 @@ class BM25_search:
         if removed:
             # Offload the index rebuild to a thread so as not to block the event loop
             await asyncio.to_thread(self.update_bm25)
-            logger.info(f"Batch asynchronously removed {len(removed)} docs: {removed}")
+            logger.info(
+                f"Batch asynchronously removed {len(removed)} docs: {removed}")
         else:
-            logger.info("No documents were removed asynchronously; nothing to rebuild.")
+            logger.info(
+                "No documents were removed asynchronously; nothing to rebuild.")
 
         return removed
 
     def update_bm25(self) -> None:
-        tokenized_docs = [self.doc_dict[doc_id]["tokenized"] for doc_id in self.doc_ids]
+        tokenized_docs = [self.doc_dict[doc_id]["tokenized"]
+                          for doc_id in self.doc_ids]
         if tokenized_docs:
             self.bm25 = BM25Okapi(tokenized_docs)
         else:
@@ -360,7 +368,11 @@ class BM25_search:
         logger.debug(f"Tokenized Query: {processed_query}")
         with self.lock:
             if self.bm25:
-                return self.bm25.get_scores(processed_query)
+                scores = self.bm25.get_scores(processed_query)
+            # ✅ Normalize NumPy arrays to Python lists
+                if isinstance(scores, np.ndarray):
+                    scores = scores.tolist()
+                    return scores
             else:
                 logger.info("BM25 is not initialized.")
                 return []
@@ -381,21 +393,38 @@ class BM25_search:
         logger.info(f"Tokenized Query: {processed_query}")
         with self.lock:
             if self.bm25:
-                return await asyncio.to_thread(self.bm25.get_scores, processed_query)
+                scores = await asyncio.to_thread(self.bm25.get_scores, processed_query)
+                # ✅ Normalize here too
+                if isinstance(scores, np.ndarray):
+                    scores = scores.tolist()
+                return scores
             else:
                 logger.info("BM25 is not initialized.")
                 return []
 
     # batch search
-    def get_scores_batch(self, queries: List[str]) -> List[np.ndarray]:
-        # returns one score-array per query (shape = len(corpus))
-        return [np.array(self.get_scores(q)) for q in queries]
+    def get_scores_batch(self, queries: List[str]) -> List[List[float]]:
+        """Return list of lists (each a Python list of floats)."""
+        results = []
+        for q in queries:
+            scores = self.get_scores(q)
+            if isinstance(scores, np.ndarray):
+                scores = scores.tolist()
+            results.append(scores)
+        return results
 
-    async def async_get_scores_batch(self, queries: List[str]) -> List[np.ndarray]:
+    async def async_get_scores_batch(self, queries: List[str]) -> List[List[float]]:
         loop = asyncio.get_running_loop()
-        return await asyncio.gather(
+        results = await asyncio.gather(
             *[loop.run_in_executor(None, self.get_scores, q) for q in queries]
         )
+        # ✅ Normalize all to list
+        normalized = []
+        for r in results:
+            if isinstance(r, np.ndarray):
+                r = r.tolist()
+            normalized.append(r)
+        return normalized
 
     def get_top_n_docs(
         self,
@@ -483,7 +512,8 @@ class BM25_search:
             ]
 
             # Sort by score and take top n
-            top_docs = sorted(filtered_scores, key=lambda x: x[1], reverse=True)[:n]
+            top_docs = sorted(
+                filtered_scores, key=lambda x: x[1], reverse=True)[:n]
 
             # Build final result with document text
             results = []
@@ -579,7 +609,8 @@ class BM25_search:
             ]
 
             # Sort by score and take top n
-            top_docs = sorted(filtered_scores, key=lambda x: x[1], reverse=True)[:n]
+            top_docs = sorted(
+                filtered_scores, key=lambda x: x[1], reverse=True)[:n]
 
             # Build final result with document text
             results = []
