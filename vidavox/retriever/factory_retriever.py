@@ -18,11 +18,15 @@ class RetrieverFactory:
         faiss: Optional[FAISSRetriever] = None,
         **kwargs,
     ):
+        print(f"kind_factory: {kind}")
         if kind == "bm25":
+            print("creating BM25Retriever")
             return BM25Retriever()
         elif kind == "faiss":
+            print("creating FAISSRetriever")
             return FAISSRetriever(embedding_model)
         elif kind == "hybrid":
+            print("creating HybridRetriever")
             # reuse or create base retrievers
             bm25 = bm25 or BM25Retriever()
             faiss = faiss or FAISSRetriever(embedding_model)

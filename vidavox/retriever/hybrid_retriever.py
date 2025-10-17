@@ -7,6 +7,7 @@ class HybridRetriever(BaseRetriever):
     """
     Adapter to integrate Hybrid_search with the BaseRetriever interface.
     """
+    supports_batch = True
 
     def __init__(
         self,
@@ -91,6 +92,55 @@ class HybridRetriever(BaseRetriever):
                 doc_id, {}).get("text", "")
             results.append((doc_id, text, float(score)))
         return results
+
+    def search_batch(
+        self,
+        queries: List[str],
+        k: int = 5,
+        **kwargs
+    ) -> List[List[Tuple[str, str, float]]]:
+        results_batch = self.model.advanced_search_batch(
+            queries,
+            keywords_list=kwargs.get("keywords_list"),
+            top_n=k,
+            threshold=kwargs.get("threshold", 0.5),
+            prefixes=kwargs.get("prefixes"),
+            include_doc_ids=kwargs.get("include_doc_ids"),
+            exclude_doc_ids=kwargs.get("exclude_doc_ids"),
+        )
+        # Normalize to (id, text, score)
+        batch_output = []
+        for results in results_batch:
+            batch_output.append([
+                (doc_id, self.model.bm25_search.doc_dict.get(
+                    doc_id, {}).get("text", ""), float(score))
+                for doc_id, score in results
+            ])
+        return batch_output
+
+    async def async_search_batch(
+        self,
+        queries: List[str],
+        k: int = 5,
+        **kwargs
+    ) -> List[List[Tuple[str, str, float]]]:
+        results_batch = await self.model.advanced_search_batch_async(
+            queries,
+            keywords_list=kwargs.get("keywords_list"),
+            top_n=k,
+            threshold=kwargs.get("threshold", 0.5),
+            prefixes=kwargs.get("prefixes"),
+            include_doc_ids=kwargs.get("include_doc_ids"),
+            exclude_doc_ids=kwargs.get("exclude_doc_ids"),
+        )
+        batch_output = []
+        for results in results_batch:
+            batch_output.append([
+                (doc_id, self.model.bm25_search.doc_dict.get(
+                    doc_id, {}).get("text", ""), float(score))
+                for doc_id, score in results
+            ])
+        return batch_output
 
     # ─── Persistence (delegated) ────────────────────────────────────────
     def save(self, path: str) -> None:

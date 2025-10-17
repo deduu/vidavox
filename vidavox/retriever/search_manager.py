@@ -6,9 +6,9 @@ from typing import List, Dict, Any, Optional, Tuple, Set
 
 from vidavox.search import SearchMode
 from vidavox.retriever.base import BaseRetriever
-from ..core.components import SearchResult
-from ..formatters.base import BaseResultFormatter
-from ..formatters.custom import CustomResultFormatter
+from vidavox.retriever.formatters import SearchResult
+from vidavox.retriever.formatters import BaseResultFormatter
+from vidavox.retriever.formatters import CustomResultFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,8 @@ class SearchManager:
             include_doc_ids = self._get_allowed_ids(user_id)
             logger.info(
                 f"Include doc_ids: {include_doc_ids} for user {user_id}")
+        # logger.error(f"[DEBUG] retriever type: {type(self.retriever)}")
+        # logger.error(f"[DEBUG] retriever dir: {dir(self.retriever)[:15]}")
 
         try:
             return self.retriever.search(
@@ -92,7 +94,7 @@ class SearchManager:
         user_id: Optional[str],
     ) -> List[List[Tuple[str, float]]]:
         """Perform batch search operations."""
-        return self.hybrid_search.advanced_search_batch(
+        return self.retriever.search_batch(
             queries=queries,
             keywords_list=keywords_list,
             top_n=top_k,
@@ -114,7 +116,7 @@ class SearchManager:
         user_id: Optional[str],
     ) -> List[List[Tuple[str, float]]]:
         """Perform asynchronous batch search operations."""
-        return await self.hybrid_search.advanced_search_batch_async(
+        return await self.retriever.async_search_batch(
             queries=queries,
             keywords_list=keywords_list,
             top_n=top_k,
@@ -142,7 +144,7 @@ class SearchManager:
             include_doc_ids = self._get_allowed_ids(user_id)
 
         # Retrieve a large candidate pool
-        candidate_results = self.hybrid_search.advanced_search(
+        candidate_results = self.retriever.search(
             query_text,
             keywords,
             top_n=1000,
@@ -188,12 +190,14 @@ class SearchManager:
         formatter = result_formatter or CustomResultFormatter()
         seen, output = set(), []
 
-        for doc_id, score in results:
+        for doc_id, text, score in results:
             if doc_id in seen or doc_id not in self.doc_manager.documents:
                 continue
 
             seen.add(doc_id)
             doc_obj = self.doc_manager.documents[doc_id]
+            # print(f"text: {text}")
+            # print(f"doc_obj.text: {doc_obj.text}")
 
             search_result = SearchResult(
                 doc_id, doc_obj.text, doc_obj.meta_data, score)

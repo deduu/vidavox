@@ -158,5 +158,6 @@ pipdeptree = "^2.25.0"
 grep = "^0.3.2"
 pytest-asyncio = "^0.23.8"
 hypothesis = "^6.131.8"
+matplotlib = "^3.10.7"
 
 
